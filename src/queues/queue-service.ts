@@ -1,5 +1,5 @@
 import type { JobType } from "bullmq";
-import { ApiError } from "../api/errors.js";
+import { ApiError, classifyBackendError } from "../api/errors.js";
 import type { QueueInfo } from "../jobs/job-types.js";
 import { assertValidQueueName, type QueueCatalog } from "./queue-catalog.js";
 import type { QueueFactory } from "../infrastructure/bullmq/queue-factory.js";
@@ -39,32 +39,48 @@ export class QueueService {
     assertValidQueueName(name);
     await this.ensureRegistered(name);
     const queue = this.queues.getQueue(name);
-    const [isPaused, counts] = await Promise.all([
-      queue.isPaused(),
-      queue.getJobCounts(...COUNT_TYPES),
-    ]);
-    return { name, isPaused, counts: { ...counts } };
+    try {
+      const [isPaused, counts] = await Promise.all([
+        queue.isPaused(),
+        queue.getJobCounts(...COUNT_TYPES),
+      ]);
+      return { name, isPaused, counts: { ...counts } };
+    } catch (err) {
+      throw classifyBackendError(err, "queue inspection");
+    }
   }
 
   async pauseQueue(name: string): Promise<QueueInfo> {
     assertValidQueueName(name);
     await this.ensureRegistered(name);
-    await this.queues.getQueue(name).pause();
+    try {
+      await this.queues.getQueue(name).pause();
+    } catch (err) {
+      throw classifyBackendError(err, "queue pause");
+    }
     return this.getQueue(name);
   }
 
   async resumeQueue(name: string): Promise<QueueInfo> {
     assertValidQueueName(name);
     await this.ensureRegistered(name);
-    await this.queues.getQueue(name).resume();
+    try {
+      await this.queues.getQueue(name).resume();
+    } catch (err) {
+      throw classifyBackendError(err, "queue resume");
+    }
     return this.getQueue(name);
   }
 
   async getJobCounts(name: string): Promise<Record<string, number>> {
     assertValidQueueName(name);
     await this.ensureRegistered(name);
-    const counts = await this.queues.getQueue(name).getJobCounts(...COUNT_TYPES);
-    return { ...counts };
+    try {
+      const counts = await this.queues.getQueue(name).getJobCounts(...COUNT_TYPES);
+      return { ...counts };
+    } catch (err) {
+      throw classifyBackendError(err, "queue inspection");
+    }
   }
 
   private async ensureRegistered(name: string): Promise<void> {

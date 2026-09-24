@@ -21,7 +21,7 @@ export interface BuiltSystem {
   healthService: HealthService;
   fastifyApp: AppInstance | undefined;
   workerManager: WorkerManager | undefined;
-  /** Ordered shutdown: HTTP -> workers -> QueueEvents -> catalog -> queues -> Redis. */
+  /** Ordered shutdown: HTTP -> workers -> subscriptions -> queues -> Redis. */
   close: () => Promise<void>;
 }
 
@@ -139,10 +139,11 @@ export async function buildSystem(config: AppConfig): Promise<BuiltSystem> {
         logger.warn({ err }, "Error closing HTTP server");
       }
     }
-    // 2-4. Workers, QueueEvents, cancellation + catalog subscriptions.
+    // 2-4. Workers (graceful close bounded by the shutdown deadline,
+    // then abort + force-close), cancellation + catalog subscriptions.
     if (workerManager) {
       try {
-        await workerManager.stop();
+        await workerManager.stop({ shutdownTimeoutMs: config.shutdownTimeoutMs });
       } catch (err) {
         logger.warn({ err }, "Error stopping worker manager");
       }

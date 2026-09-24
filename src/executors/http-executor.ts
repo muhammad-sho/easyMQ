@@ -151,80 +151,91 @@ const IPV6_PRIVATE_ONLY: Array<{ cidr: string; reason: string }> = [
  * Cloud metadata-service IPs. Blocked unconditionally — even when private
  * network access is enabled — since they hand out instance credentials.
  */
-const METADATA_IPS = new Set([
+const METADATA_IPV4 = new Set([
   "169.254.169.254", // AWS/GCP/Azure/OCI link-local metadata
   "100.100.100.100", // Alibaba Cloud metadata
-  "fd00:ec2::254", // AWS IPv6 metadata
 ]);
+
+/** AWS IPv6 metadata endpoint, compared in normalized integer form. */
+const METADATA_IPV6: bigint[] = ["fd00:ec2::254"].flatMap((ip) => {
+  const parsed = ipv6ToBigInt(ip);
+  return parsed === null ? [] : [parsed];
+});
+
+/**
+ * Pure address classifier: returns a human-readable block reason, or null
+ * when the address is allowed. Exported for unit testing across IPv4/IPv6
+ * loopback, link-local, private, metadata, and mapped addresses.
+ */
+export function classifyAddress(address: string, allowPrivateNetwork: boolean): string | null {
+  const { family, normalized } = unwrapIp(address);
+  if (family === 4) {
+    if (METADATA_IPV4.has(normalized)) return "cloud metadata-service";
+    for (const { cidr, reason } of IPV4_ALWAYS_BLOCKED) {
+      if (inCidr(normalized, cidr)) return reason;
+    }
+    if (allowPrivateNetwork) return null;
+    for (const { cidr, reason } of IPV4_PRIVATE_ONLY) {
+      if (inCidr(normalized, cidr)) return reason;
+    }
+    return null;
+  }
+  const addrInt = ipv6ToBigInt(normalized);
+  if (addrInt !== null && METADATA_IPV6.includes(addrInt)) return "cloud metadata-service";
+  for (const { cidr, reason } of IPV6_ALWAYS_BLOCKED) {
+    if (ipv6InCidr(normalized, cidr)) return reason;
+  }
+  if (allowPrivateNetwork) return null;
+  for (const { cidr, reason } of IPV6_PRIVATE_ONLY) {
+    if (ipv6InCidr(normalized, cidr)) return reason;
+  }
+  return null;
+}
+
+/** Resolves a hostname to all addresses (injectable for tests). */
+export type DnsResolver = (hostname: string) => Promise<string[]>;
+
+async function systemResolver(hostname: string): Promise<string[]> {
+  return (await lookup(hostname, { all: true })).map((entry) => entry.address);
+}
 
 /**
  * SSRF guard: resolve the hostname and reject unsafe destinations.
+ * A hostname is rejected when ANY resolved address is blocked — one
+ * public address does not excuse a private/metadata sibling.
  * Private ranges are allowed only when explicitly configured
  * (self-hosted installations often call internal services).
  *
- * Note: resolution happens before connect (TOCTOU with DNS rebinding
- * is inherent to this approach and documented in the README).
+ * Limitation (DNS rebinding): the validated address is not pinned to the
+ * outgoing connection — `fetch` resolves the hostname again, so a hostile
+ * DNS server that rotates answers between validation and connect can
+ * bypass this check. Mitigate with a trusted resolver / short TTLs, and
+ * prefer static IPs or private-network controls for sensitive targets.
  */
 export async function assertSafeTarget(
   hostname: string,
   allowPrivateNetwork: boolean,
+  resolve: DnsResolver = systemResolver,
 ): Promise<void> {
-  let addresses;
+  let addresses: string[];
   try {
-    addresses = await lookup(hostname, { all: true });
+    addresses = await resolve(hostname);
   } catch (err) {
     throw new ExecutorError("EXECUTOR_ERROR", `DNS lookup failed for '${hostname}'.`, {
       cause: err,
     });
   }
-  for (const addr of addresses) {
-    const { family, normalized } = unwrapIp(addr.address);
-    if (METADATA_IPS.has(normalized.toLowerCase())) {
+  for (const address of addresses) {
+    const reason = classifyAddress(address, allowPrivateNetwork);
+    if (reason !== null) {
+      const { normalized } = unwrapIp(address);
       throw new ExecutorError(
         "SSRF_BLOCKED",
-        `Blocked request to cloud metadata-service address '${normalized}'.`,
+        reason === "cloud metadata-service" || allowPrivateNetwork
+          ? `Blocked request to ${reason} address '${normalized}'.`
+          : `Blocked request to ${reason} address '${normalized}'. ` +
+              `Enable HTTP_ALLOW_PRIVATE_NETWORK to call internal services.`,
       );
-    }
-    if (family === 4) {
-      for (const { cidr, reason } of IPV4_ALWAYS_BLOCKED) {
-        if (inCidr(normalized, cidr)) {
-          throw new ExecutorError(
-            "SSRF_BLOCKED",
-            `Blocked request to ${reason} address '${normalized}'.`,
-          );
-        }
-      }
-      if (!allowPrivateNetwork) {
-        for (const { cidr, reason } of IPV4_PRIVATE_ONLY) {
-          if (inCidr(normalized, cidr)) {
-            throw new ExecutorError(
-              "SSRF_BLOCKED",
-              `Blocked request to ${reason} address '${normalized}'. ` +
-                `Enable HTTP_ALLOW_PRIVATE_NETWORK to call internal services.`,
-            );
-          }
-        }
-      }
-    } else {
-      for (const { cidr, reason } of IPV6_ALWAYS_BLOCKED) {
-        if (ipv6InCidr(normalized, cidr)) {
-          throw new ExecutorError(
-            "SSRF_BLOCKED",
-            `Blocked request to ${reason} address '${normalized}'.`,
-          );
-        }
-      }
-      if (!allowPrivateNetwork) {
-        for (const { cidr, reason } of IPV6_PRIVATE_ONLY) {
-          if (ipv6InCidr(normalized, cidr)) {
-            throw new ExecutorError(
-              "SSRF_BLOCKED",
-              `Blocked request to ${reason} address '${normalized}'. ` +
-                `Enable HTTP_ALLOW_PRIVATE_NETWORK to call internal services.`,
-            );
-          }
-        }
-      }
     }
   }
 }
@@ -264,7 +275,7 @@ function bodyToString(body: Json | string | undefined): string | undefined {
 
 /**
  * Generic outbound HTTP executor with redirect limits, response-size
- * limits, hop-by-hop header rejection, cross-origin credential stripping
+ * limits, hop-by-hop header rejection, cross-origin header stripping
  * and SSRF protection.
  */
 export class HttpExecutor implements Executor {
@@ -287,7 +298,9 @@ export class HttpExecutor implements Executor {
     }
     const http = execution;
     const timeoutMs = http.timeoutMs ?? this.options.timeoutMs;
-    const allowPrivate = http.allowPrivateNetwork ?? this.options.allowPrivateNetwork;
+    // Network policy is operator-controlled only: per-job overrides were
+    // removed so API callers cannot escalate private-network access.
+    const allowPrivate = this.options.allowPrivateNetwork;
 
     let url: URL;
     try {
@@ -305,8 +318,10 @@ export class HttpExecutor implements Executor {
     const method = (http.method ?? "GET").toUpperCase();
     const headers = this.buildHeaders(http.headers);
     const body = ["GET", "HEAD"].includes(method) ? undefined : bodyToString(http.body);
+    let autoContentType: string | undefined;
     if (body !== undefined && !hasContentType(headers)) {
-      headers["content-type"] = typeof http.body === "string" ? "text/plain" : "application/json";
+      autoContentType = typeof http.body === "string" ? "text/plain" : "application/json";
+      headers["content-type"] = autoContentType;
     }
 
     const timeoutController = new AbortController();
@@ -320,6 +335,7 @@ export class HttpExecutor implements Executor {
         url,
         method,
         headers,
+        autoContentType,
         body,
         signal,
         allowPrivate,
@@ -363,6 +379,7 @@ export class HttpExecutor implements Executor {
     url: URL;
     method: string;
     headers: Record<string, string>;
+    autoContentType: string | undefined;
     body: string | undefined;
     signal: AbortSignal;
     allowPrivate: boolean;
@@ -370,7 +387,8 @@ export class HttpExecutor implements Executor {
     jobId: string;
   }): Promise<Omit<ExecutionResult, "durationMs">> {
     let { url, method, body } = args;
-    const { headers, signal, allowPrivate, queue, jobId } = args;
+    let headers = { ...args.headers };
+    const { autoContentType, signal, allowPrivate, queue, jobId } = args;
 
     for (let redirect = 0; redirect <= this.options.maxRedirects; redirect++) {
       await assertSafeTarget(url.hostname, allowPrivate);
@@ -410,9 +428,16 @@ export class HttpExecutor implements Executor {
           );
         }
         if (next.origin !== url.origin) {
-          // Never forward credentials across origins.
-          delete headers["authorization"];
-          delete headers["cookie"];
+          // Origin changed (scheme, host, or port): drop EVERY
+          // caller-supplied header. Any of them may carry credentials
+          // (Authorization, Cookie, x-api-key, x-auth-token, ...), and the
+          // redirect destination is not the party they were issued to.
+          // Preserve only the executor-added content-type while a body is
+          // still being sent, so a retained 307/308 body stays labeled.
+          const retainedContentType =
+            body !== undefined && autoContentType !== undefined ? autoContentType : undefined;
+          headers =
+            retainedContentType !== undefined ? { "content-type": retainedContentType } : {};
         }
         if (response.status === 303 && method !== "HEAD") {
           method = "GET";

@@ -76,7 +76,10 @@ export type FakeBehavior =
   | { kind: "success"; statusCode?: number }
   | { kind: "fail"; message?: string }
   | { kind: "failOnce" }
-  | { kind: "block" };
+  | { kind: "block" }
+  | { kind: "failThenBlock" }
+  | { kind: "slow"; ms: number }
+  | { kind: "never" };
 
 /** Fake executor for integration tests (no external HTTP needed). */
 export class FakeExecutor implements Executor {
@@ -121,6 +124,51 @@ export class FakeExecutor implements Executor {
         });
         throw new ExecutionAbortedError();
       }
+      case "failThenBlock": {
+        if (ctx.attemptsMade === 0) throw new Error("first attempt fails");
+        if (ctx.signal.aborted) throw new ExecutionAbortedError();
+        await new Promise<void>((_resolve, reject) => {
+          ctx.signal.addEventListener("abort", () => reject(new ExecutionAbortedError()), {
+            once: true,
+          });
+        });
+        throw new ExecutionAbortedError();
+      }
+      case "slow": {
+        await new Promise<void>((resolve, reject) => {
+          if (ctx.signal.aborted) {
+            reject(new ExecutionAbortedError());
+            return;
+          }
+          const timer = setTimeout(resolve, behavior.ms);
+          ctx.signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new ExecutionAbortedError());
+          });
+        });
+        return {
+          statusCode: 200,
+          headers: {},
+          body: "slow-ok",
+          bodyTruncated: false,
+          durationMs: behavior.ms,
+        };
+      }
+      case "never": {
+        // Ignores the abort signal and never settles. The timer is
+        // unref'd so it cannot hold the test process event loop open.
+        await new Promise<void>(() => {
+          const timer = setTimeout(() => undefined, 120_000);
+          timer.unref();
+        });
+        return {
+          statusCode: 200,
+          headers: {},
+          body: "never",
+          bodyTruncated: false,
+          durationMs: 0,
+        };
+      }
     }
   }
 }
@@ -140,7 +188,11 @@ export interface TestSystem {
 }
 
 /** Full worker-side stack with a fake executor. */
-export function buildTestSystem(prefix: string, env: Record<string, string> = {}): TestSystem {
+export function buildTestSystem(
+  prefix: string,
+  env: Record<string, string> = {},
+  workerOpts: { lockDurationMs?: number; stalledIntervalMs?: number } = {},
+): TestSystem {
   const config = testConfig(prefix, env);
   const logger = createLogger({ level: "silent", role: "both" });
   const connections = new RedisConnectionManager(REDIS_URL, logger);
@@ -166,7 +218,16 @@ export function buildTestSystem(prefix: string, env: Record<string, string> = {}
     catalog,
     cancellation,
     processor,
-    options: { concurrency: 5, prefix },
+    options: {
+      concurrency: 5,
+      prefix,
+      ...(workerOpts.lockDurationMs !== undefined
+        ? { lockDurationMs: workerOpts.lockDurationMs }
+        : {}),
+      ...(workerOpts.stalledIntervalMs !== undefined
+        ? { stalledIntervalMs: workerOpts.stalledIntervalMs }
+        : {}),
+    },
     logger,
   });
   const queueService = new QueueService(queues, catalog);

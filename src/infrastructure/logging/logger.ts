@@ -1,10 +1,12 @@
-import pino, { type Logger } from "pino";
+import pino, { type DestinationStream, type Logger } from "pino";
 import type { AppRole, LogLevel } from "../../config/schema.js";
 
 export interface CreateLoggerOptions {
   level?: LogLevel;
   role?: AppRole;
   pretty?: boolean;
+  /** Optional pino destination (defaults to stdout). Useful for capturing logs in tests. */
+  destination?: DestinationStream;
 }
 
 /**
@@ -37,27 +39,30 @@ const REDACT_PATHS = [
  * Service/role base fields are attached to every line.
  */
 export function createLogger(options: CreateLoggerOptions = {}): Logger {
-  const { level = "info", role, pretty = false } = options;
-  return pino({
-    level,
-    base: {
-      service: "easymq",
-      ...(role !== undefined ? { role } : {}),
+  const { level = "info", role, pretty = false, destination } = options;
+  return pino(
+    {
+      level,
+      base: {
+        service: "easymq",
+        ...(role !== undefined ? { role } : {}),
+      },
+      timestamp: pino.stdTimeFunctions.isoTime,
+      redact: {
+        paths: REDACT_PATHS,
+        censor: "[Redacted]",
+      },
+      ...(pretty
+        ? {
+            transport: {
+              target: "pino-pretty",
+              options: { colorize: true, singleLine: true },
+            },
+          }
+        : {}),
     },
-    timestamp: pino.stdTimeFunctions.isoTime,
-    redact: {
-      paths: REDACT_PATHS,
-      censor: "[Redacted]",
-    },
-    ...(pretty
-      ? {
-          transport: {
-            target: "pino-pretty",
-            options: { colorize: true, singleLine: true },
-          },
-        }
-      : {}),
-  });
+    destination,
+  );
 }
 
 /** Create a child logger carrying queue/job context. */

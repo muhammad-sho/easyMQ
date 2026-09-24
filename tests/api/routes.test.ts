@@ -5,6 +5,9 @@ import { loadConfig } from "../../src/config/env.js";
 import { createLogger } from "../../src/infrastructure/logging/logger.js";
 import { HealthService } from "../../src/health/health-service.js";
 import type { JobService } from "../../src/jobs/job-service.js";
+import { JobService as RealJobService } from "../../src/jobs/job-service.js";
+import { QueueService as RealQueueService } from "../../src/queues/queue-service.js";
+import { ScheduleService as RealScheduleService } from "../../src/jobs/schedule-service.js";
 import type { QueueService } from "../../src/queues/queue-service.js";
 import type { ScheduleService } from "../../src/jobs/schedule-service.js";
 import type { EasyMQJob } from "../../src/jobs/job-types.js";
@@ -35,7 +38,7 @@ async function buildTestApp(
     authDisabled?: boolean;
     readinessFails?: boolean;
   } = {},
-): Promise<AppInstance> {
+): Promise<{ app: AppInstance; jobService: JobService }> {
   const config = loadConfig({
     API_TOKEN: TOKEN,
     ...(overrides.authDisabled ? { AUTH_DISABLED: "true" } : {}),
@@ -115,7 +118,7 @@ async function buildTestApp(
     healthService,
   };
   const app = await buildApp(services);
-  return app;
+  return { app, jobService };
 }
 
 function authHeaders() {
@@ -129,7 +132,7 @@ function jsonBody<T>(res: { json(): unknown }): T {
 describe("jobs API", () => {
   let app: AppInstance;
   beforeAll(async () => {
-    app = await buildTestApp();
+    ({ app } = await buildTestApp());
   });
 
   it("creates a job (201) and validates input (400)", async () => {
@@ -150,6 +153,47 @@ describe("jobs API", () => {
     });
     expect(invalid.statusCode).toBe(400);
     expect(jsonBody<{ error: { code: string } }>(invalid).error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("rejects per-job network-policy overrides (400)", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/jobs",
+      headers: authHeaders(),
+      payload: {
+        queue: "emails",
+        execution: { type: "http", url: "https://example.com/hook", allowPrivateNetwork: true },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("forwards caller headers to the service (stored, never rendered)", async () => {
+    const { app: headerApp, jobService } = await buildTestApp();
+    const res = await headerApp.inject({
+      method: "POST",
+      url: "/jobs",
+      headers: authHeaders(),
+      payload: {
+        queue: "emails",
+        execution: {
+          type: "http",
+          url: "https://example.com/hook",
+          headers: { authorization: "Bearer header-secret-1" },
+        },
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    // Headers reach the stored execution so the worker can send them...
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn() has no this-scoping hazard
+    const createJobMock = vi.mocked(jobService.createJob);
+    expect(createJobMock).toHaveBeenCalledTimes(1);
+    const sent = createJobMock.mock.calls[0]?.[0];
+    expect(sent?.execution).toMatchObject({
+      headers: { authorization: "Bearer header-secret-1" },
+    });
+    // ...but values never appear in the HTTP response.
+    expect(res.body).not.toContain("header-secret-1");
   });
 
   it("lists, gets, retries, promotes, delays, cancels and removes jobs", async () => {
@@ -201,7 +245,7 @@ describe("jobs API", () => {
 describe("queues API", () => {
   let app: AppInstance;
   beforeAll(async () => {
-    app = await buildTestApp();
+    ({ app } = await buildTestApp());
   });
 
   it("lists, inspects, pauses, resumes and counts", async () => {
@@ -224,7 +268,7 @@ describe("queues API", () => {
 describe("schedules API", () => {
   let app: AppInstance;
   beforeAll(async () => {
-    app = await buildTestApp();
+    ({ app } = await buildTestApp());
   });
 
   it("upserts, gets, lists and removes schedules", async () => {
@@ -261,8 +305,8 @@ describe("auth", () => {
   let app: AppInstance;
   let openApp: AppInstance;
   beforeAll(async () => {
-    app = await buildTestApp();
-    openApp = await buildTestApp({ authDisabled: true });
+    ({ app } = await buildTestApp());
+    ({ app: openApp } = await buildTestApp({ authDisabled: true }));
   });
 
   it("requires a valid Bearer token", async () => {
@@ -300,7 +344,7 @@ describe("auth", () => {
 
 describe("health API", () => {
   it("reports liveness and readiness", async () => {
-    const app = await buildTestApp();
+    const { app } = await buildTestApp();
     const live = await app.inject({ method: "GET", url: "/health/live" });
     expect(live.statusCode).toBe(200);
     expect(jsonBody<{ status: string }>(live).status).toBe("ok");
@@ -310,9 +354,66 @@ describe("health API", () => {
   });
 
   it("reports 503 when a readiness check fails", async () => {
-    const app = await buildTestApp({ readinessFails: true });
+    const { app } = await buildTestApp({ readinessFails: true });
     const ready = await app.inject({ method: "GET", url: "/health/ready" });
     expect(ready.statusCode).toBe(503);
     expect(jsonBody<{ error: { code: string } }>(ready).error.code).toBe("SERVICE_UNAVAILABLE");
+  });
+});
+
+describe("backend error mapping", () => {
+  async function buildAppWithFailingBackend(failure: "unavailable" | "unexpected") {
+    const config = loadConfig({ API_TOKEN: TOKEN });
+    const logger = createLogger({ level: "silent", role: "api" });
+    const rawError =
+      failure === "unavailable"
+        ? Object.assign(new Error("connect ECONNREFUSED 10.99.0.7:6390"), {
+            code: "ECONNREFUSED",
+          })
+        : new Error("Missing lock for job 9. failed to run clean job script");
+    const catalog = {
+      register: vi.fn().mockRejectedValue(rawError),
+      list: vi.fn().mockResolvedValue([]),
+    };
+    const queues = { getQueue: vi.fn() };
+    const jobService = new RealJobService(queues as never, catalog as never, config);
+    const queueService = new RealQueueService(queues as never, catalog as never);
+    const scheduleService = new RealScheduleService(queues as never, catalog as never, config);
+    return buildApp({
+      config,
+      logger,
+      queueService,
+      jobService,
+      scheduleService,
+      healthService: new HealthService("api"),
+    });
+  }
+
+  it("maps registry outages to 503 without backend details", async () => {
+    const app = await buildAppWithFailingBackend("unavailable");
+    const res = await app.inject({
+      method: "POST",
+      url: "/jobs",
+      headers: authHeaders(),
+      payload: { queue: "emails", execution: { type: "http", url: "https://example.com/hook" } },
+    });
+    expect(res.statusCode).toBe(503);
+    expect(jsonBody<{ error: { code: string } }>(res).error.code).toBe("SERVICE_UNAVAILABLE");
+    expect(res.body).not.toContain("10.99.0.7");
+    expect(res.body).not.toContain("ECONNREFUSED");
+  });
+
+  it("maps unexpected backend failures to 500 without backend wording", async () => {
+    const app = await buildAppWithFailingBackend("unexpected");
+    const res = await app.inject({
+      method: "POST",
+      url: "/jobs",
+      headers: authHeaders(),
+      payload: { queue: "emails", execution: { type: "http", url: "https://example.com/hook" } },
+    });
+    expect(res.statusCode).toBe(500);
+    expect(jsonBody<{ error: { code: string } }>(res).error.code).toBe("INTERNAL_ERROR");
+    expect(res.body).not.toContain("Missing lock");
+    expect(res.body).not.toContain("clean job script");
   });
 });

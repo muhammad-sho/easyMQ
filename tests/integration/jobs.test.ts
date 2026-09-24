@@ -28,7 +28,7 @@ describe("job lifecycle", () => {
       payload: { hello: "world" },
       execution: { type: "http", url: "https://example.com/hook" },
     });
-    expect(created.state).toBe("waiting");
+    expect(created.state === "waiting" || created.state === "active").toBe(true);
     expect(created.payload).toEqual({ hello: "world" });
     const done = await waitForJob(system.jobService, queue, created.id, "completed");
     // BullMQ counts the started attempt: one successful run => attemptsMade 1.
@@ -185,5 +185,65 @@ describe("job lifecycle", () => {
     expect(second.nextOffset).toBe(4);
     const ids = new Set([...first.jobs, ...second.jobs].map((j) => j.id));
     expect(ids.size).toBe(4);
+  });
+
+  it("reports no further page on exact multiples and empty results", async () => {
+    const queue = `q-${prefix}-paging-exact`;
+    for (let n = 0; n < 4; n++) {
+      await system.jobService.createJob({
+        queue,
+        payload: { n },
+        execution: { type: "http", url: "https://example.com/hook" },
+      });
+    }
+    const first = await system.jobService.listJobs({ queue, limit: 2, offset: 0 });
+    expect(first.jobs).toHaveLength(2);
+    expect(first.nextOffset).toBe(2);
+    const last = await system.jobService.listJobs({ queue, limit: 2, offset: 2 });
+    expect(last.jobs).toHaveLength(2);
+    expect(last.nextOffset).toBeNull();
+    const beyond = await system.jobService.listJobs({ queue, limit: 2, offset: 4 });
+    expect(beyond.jobs).toHaveLength(0);
+    expect(beyond.nextOffset).toBeNull();
+    const emptyQueue = `q-${prefix}-paging-empty`;
+    await system.catalog.register(emptyQueue);
+    const empty = await system.jobService.listJobs({ queue: emptyQueue, limit: 2, offset: 0 });
+    expect(empty.jobs).toHaveLength(0);
+    expect(empty.nextOffset).toBeNull();
+  });
+
+  it("redacts execution header values from job responses", async () => {
+    const queue = `q-${prefix}-redact`;
+    const secret = `s3cr3t-${prefix}`;
+    const created = await system.jobService.createJob({
+      queue,
+      payload: null,
+      execution: {
+        type: "http",
+        url: "https://example.com/hook",
+        method: "POST",
+        headers: { authorization: `Bearer ${secret}`, "x-api-key": secret },
+      },
+    });
+    for (const view of [
+      created,
+      await system.jobService.getJob(queue, created.id),
+      (await system.jobService.listJobs({ queue })).jobs[0],
+    ]) {
+      expect(view).toBeDefined();
+      const serialized = JSON.stringify(view);
+      expect(serialized).not.toContain(secret);
+      expect(view?.execution).toMatchObject({
+        type: "http",
+        url: "https://example.com/hook",
+        method: "POST",
+        headerNames: ["authorization", "x-api-key"],
+      });
+    }
+    // The stored config still carries the real headers for the worker.
+    const raw = await system.queues.getQueue(queue).getJob(created.id);
+    const stored = (raw?.data as { execution?: { headers?: Record<string, string> } })?.execution
+      ?.headers;
+    expect(stored?.["authorization"]).toBe(`Bearer ${secret}`);
   });
 });

@@ -2,7 +2,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ExecutionAbortedError, type JobExecutionContext } from "../../src/executors/executor.js";
-import { HttpExecutor, redactUrlForLogging } from "../../src/executors/http-executor.js";
+import {
+  HttpExecutor,
+  assertSafeTarget,
+  classifyAddress,
+  redactUrlForLogging,
+} from "../../src/executors/http-executor.js";
 
 const OPTIONS = {
   timeoutMs: 5000,
@@ -143,8 +148,10 @@ describe("HttpExecutor", () => {
     });
   });
 
-  it("strips credentials on cross-origin redirects", async () => {
+  it("strips all caller headers on cross-origin redirects", async () => {
+    const received: Array<Record<string, string | string[] | undefined>> = [];
     const second = createServer((req: IncomingMessage, res: ServerResponse) => {
+      received.push({ ...req.headers });
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ authorization: req.headers.authorization ?? null }));
     });
@@ -158,16 +165,39 @@ describe("HttpExecutor", () => {
         execution: {
           type: "http",
           url: `${baseUrl}/redirect-auth`,
-          headers: { authorization: "Bearer secret" },
+          headers: {
+            authorization: "Bearer secret",
+            cookie: "session=abc",
+            "x-api-key": "key-123",
+            "x-auth-token": "token-456",
+          },
         },
       });
       expect(result.body).toContain('"authorization":null');
+      const seen = received[0] ?? {};
+      for (const name of ["authorization", "cookie", "x-api-key", "x-auth-token"]) {
+        expect(seen[name], `header ${name} must not cross origins`).toBeUndefined();
+      }
     } finally {
       globalThis.__CROSS_ORIGIN__ = undefined;
       await new Promise<void>((resolve, reject) =>
         second.close((err) => (err ? reject(err) : resolve())),
       );
     }
+  });
+
+  it("retains caller headers on same-origin redirects", async () => {
+    const executor = new HttpExecutor(OPTIONS);
+    const result = await executor.execute({
+      ...ctxFor(`${baseUrl}/redirect`),
+      execution: {
+        type: "http",
+        url: `${baseUrl}/redirect`,
+        headers: { "x-api-key": "key-123" },
+      },
+    });
+    expect(result.statusCode).toBe(200);
+    expect(result.body).toContain("x-api-key");
   });
 
   it("enforces the response-size limit", async () => {
@@ -205,6 +235,85 @@ describe("HttpExecutor", () => {
       code: "SSRF_BLOCKED",
     });
   });
+
+  it("ignores removed per-job network-policy overrides", async () => {
+    // Even if a stale caller submits allowPrivateNetwork, only the
+    // operator-side option applies.
+    const locked = new HttpExecutor({ ...OPTIONS, allowPrivateNetwork: false });
+    const sneaky = {
+      ...ctxFor(`${baseUrl}/echo`),
+      execution: {
+        type: "http",
+        url: `${baseUrl}/echo`,
+        allowPrivateNetwork: true,
+      },
+    };
+    await expect(
+      locked.execute(sneaky as unknown as Parameters<HttpExecutor["execute"]>[0]),
+    ).rejects.toMatchObject({ code: "SSRF_BLOCKED" });
+  });
+});
+
+describe("classifyAddress", () => {
+  const cases: Array<{ address: string; blocked: boolean; openBlocked: boolean }> = [
+    // IPv4
+    { address: "127.0.0.1", blocked: true, openBlocked: false },
+    { address: "169.254.10.20", blocked: true, openBlocked: false },
+    { address: "169.254.169.254", blocked: true, openBlocked: true },
+    { address: "100.100.100.100", blocked: true, openBlocked: true },
+    { address: "10.1.2.3", blocked: true, openBlocked: false },
+    { address: "172.16.5.4", blocked: true, openBlocked: false },
+    { address: "172.31.255.255", blocked: true, openBlocked: false },
+    { address: "192.168.1.1", blocked: true, openBlocked: false },
+    { address: "0.0.0.0", blocked: true, openBlocked: true },
+    { address: "224.0.0.1", blocked: true, openBlocked: true },
+    { address: "192.0.2.1", blocked: true, openBlocked: true },
+    { address: "100.64.0.1", blocked: true, openBlocked: true },
+    { address: "93.184.216.34", blocked: false, openBlocked: false },
+    // IPv6
+    { address: "::1", blocked: true, openBlocked: false },
+    { address: "fe80::1", blocked: true, openBlocked: false },
+    { address: "fc00::1", blocked: true, openBlocked: false },
+    { address: "fd00::1", blocked: true, openBlocked: false },
+    { address: "fd00:ec2::254", blocked: true, openBlocked: true },
+    { address: "::", blocked: true, openBlocked: true },
+    { address: "ff02::1", blocked: true, openBlocked: true },
+    { address: "2001:db8::1", blocked: true, openBlocked: true },
+    { address: "2606:4700:4700::1111", blocked: false, openBlocked: false },
+    // IPv4-mapped IPv6 follows the embedded IPv4 verdict.
+    { address: "::ffff:127.0.0.1", blocked: true, openBlocked: false },
+    { address: "::ffff:169.254.169.254", blocked: true, openBlocked: true },
+    { address: "::ffff:10.0.0.1", blocked: true, openBlocked: false },
+    { address: "::ffff:93.184.216.34", blocked: false, openBlocked: false },
+  ];
+  for (const { address, blocked, openBlocked } of cases) {
+    it(`classifies ${address} (locked=${String(blocked)}, open=${String(openBlocked)})`, () => {
+      expect(classifyAddress(address, false) !== null).toBe(blocked);
+      expect(classifyAddress(address, true) !== null).toBe(openBlocked);
+    });
+  }
+});
+
+describe("assertSafeTarget", () => {
+  it("rejects a hostname when ANY resolved address is blocked", async () => {
+    await expect(
+      assertSafeTarget("mixed.example", false, () =>
+        Promise.resolve(["93.184.216.34", "10.0.0.1"]),
+      ),
+    ).rejects.toMatchObject({ code: "SSRF_BLOCKED" });
+    await expect(
+      assertSafeTarget("mixed.example", true, () => Promise.resolve(["93.184.216.34", "10.0.0.1"])),
+    ).resolves.toBeUndefined();
+  });
+
+  it("accepts all-public answers and surfaces resolver failures", async () => {
+    await expect(
+      assertSafeTarget("public.example", false, () => Promise.resolve(["93.184.216.34"])),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertSafeTarget("missing.example", false, () => Promise.reject(new Error("ENOTFOUND"))),
+    ).rejects.toMatchObject({ name: "ExecutorError" });
+  });
 });
 
 describe("redactUrlForLogging", () => {
@@ -220,3 +329,37 @@ describe("redactUrlForLogging", () => {
 declare global {
   var __CROSS_ORIGIN__: string | undefined;
 }
+
+describe("log redaction", () => {
+  it("never writes header values, bodies, or credentials to logs", async () => {
+    const { Writable } = await import("node:stream");
+    const { createLogger } = await import("../../src/infrastructure/logging/logger.js");
+    const lines: string[] = [];
+    const sink = new Writable({
+      write(chunk: unknown, _encoding, callback) {
+        lines.push(String(chunk));
+        callback();
+      },
+    });
+    const logger = createLogger({ level: "debug", destination: sink });
+    const secret = `log-secret-${Date.now()}`;
+    const executor = new HttpExecutor(OPTIONS, logger);
+    // Successful request: emits the debug request line while secrets are
+    // in play (headers + JSON body).
+    const result = await executor.execute({
+      ...ctxFor(`${baseUrl}/echo`),
+      execution: {
+        type: "http",
+        url: `${baseUrl}/echo`,
+        method: "POST",
+        headers: { authorization: `Bearer ${secret}`, "x-api-key": secret },
+        body: { password: secret },
+      },
+    });
+    expect(result.statusCode).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const output = lines.join("\n");
+    expect(lines.length).toBeGreaterThan(0);
+    expect(output).not.toContain(secret);
+  });
+});

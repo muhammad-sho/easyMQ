@@ -27,6 +27,10 @@ describe("worker discovery and distribution", () => {
     await system.catalog.register(queue);
     await system.manager.start();
     expect(system.manager.queueNames()).toContain(queue);
+    // No per-queue QueueEvents consumers exist: one managed queue costs
+    // exactly one worker connection (shared + cancel/catalog
+    // subscriptions + worker = 4 tracked clients, no `events:` client).
+    expect(system.connections.size).toBe(4);
   });
 
   it("creates workers for late registrations", async () => {
@@ -69,6 +73,37 @@ describe("worker discovery and distribution", () => {
       expect(second.queueNames()).toContain(queue);
     } finally {
       await second.stop();
+      await system.catalog.start();
+    }
+  });
+
+  it("discovers newly submitted schedules on every instance", async () => {
+    const second = new WorkerManager({
+      connections: system.connections,
+      catalog: system.catalog,
+      cancellation: system.cancellation,
+      processor: system.processor,
+      options: { concurrency: 5, prefix },
+    });
+    await second.start();
+    try {
+      const queue = `q-${prefix}-sched-discovery`;
+      await system.scheduleService.upsertSchedule({
+        id: `disc-${prefix}`,
+        queue,
+        everyMs: 3_600_000,
+        payload: null,
+        execution: { type: "http", url: "https://example.com/hook" },
+      });
+      await waitFor(() => system.manager.queueNames().includes(queue), {
+        label: `worker for ${queue} on first manager`,
+      });
+      await waitFor(() => second.queueNames().includes(queue), {
+        label: `worker for ${queue} on second manager`,
+      });
+    } finally {
+      await second.stop();
+      await system.catalog.start();
     }
   });
 });

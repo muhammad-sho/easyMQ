@@ -34,7 +34,7 @@ export function waitForRedisReady(client: Redis, timeoutMs: number): Promise<voi
 /**
  * Owns every Redis connection easyMQ creates directly.
  *
- * BullMQ objects (Queue/Worker/QueueEvents) manage their own connections
+ * BullMQ objects (Queue/Worker) manage their own connections
  * internally; this manager only tracks the client instances easyMQ itself
  * constructs (shared client + dedicated clients handed to BullMQ + the
  * catalog pub/sub clients) so shutdown can close them in order.
@@ -77,7 +77,7 @@ export class RedisConnectionManager {
     return this.shared;
   }
 
-  /** Dedicated client (BullMQ Queue/Worker/QueueEvents, pub/sub). */
+  /** Dedicated client (BullMQ Queue/Worker, pub/sub). */
   createDedicated(label = "dedicated"): Redis {
     const client = new Redis(this.url, {
       ...this.buildOptions(),

@@ -1,5 +1,5 @@
-import { UnrecoverableError, type Job, type JobsOptions, type JobType } from "bullmq";
-import { ApiError } from "../api/errors.js";
+import { ErrorCode, UnrecoverableError, type Job, type JobsOptions, type JobType } from "bullmq";
+import { ApiError, classifyBackendError } from "../api/errors.js";
 import type { AppConfig } from "../config/schema.js";
 import type { QueueFactory } from "../infrastructure/bullmq/queue-factory.js";
 import {
@@ -11,6 +11,7 @@ import {
   type HttpExecution,
   type Json,
   type ListJobsOptions,
+  type PublicExecution,
   type RetentionOptions,
   type StoredJobData,
 } from "./job-types.js";
@@ -31,6 +32,18 @@ const LISTABLE_STATES: JobType[] = [
 function toJobType(state: EasyMQJobState): JobType | undefined {
   if (state === "unknown") return undefined;
   return state;
+}
+
+/**
+ * BullMQ reports "job is not in the expected state" (e.g. promoting or
+ * re-delaying a non-delayed job) as a plain Error carrying the numeric
+ * finishedErrors code JobNotInState (-3). That is a deterministic caller
+ * conflict, not a backend failure. (BullMQ's DelayedError class signals
+ * something else — active→delayed moves — and is not relevant here.)
+ */
+function isJobNotInStateError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  return (err as { code?: unknown }).code === ErrorCode.JobNotInState;
 }
 
 /** Extract easyMQ payload/execution from BullMQ job data (never throws). */
@@ -63,8 +76,30 @@ function isHttpExecution(value: unknown): value is HttpExecution {
   return value.type === "http" && typeof value.url === "string";
 }
 
+/**
+ * Map stored execution config to its API-safe view. Header VALUES never
+ * leave the server (the worker reads them from stored job data); only
+ * header names are exposed. Stored data is never mutated.
+ */
+export function toPublicExecution(execution: Execution): PublicExecution {
+  const headers = execution.headers ?? {};
+  return {
+    type: "http",
+    url: execution.url,
+    ...(execution.method !== undefined ? { method: execution.method } : {}),
+    ...(Object.keys(headers).length > 0 ? { headerNames: Object.keys(headers) } : {}),
+    ...(execution.body !== undefined ? { body: execution.body } : {}),
+    ...(execution.timeoutMs !== undefined ? { timeoutMs: execution.timeoutMs } : {}),
+  };
+}
+
 export async function toEasyMQJob(job: Job): Promise<EasyMQJob> {
-  const state = await job.getState();
+  let state: EasyMQJobState;
+  try {
+    state = await job.getState();
+  } catch (err) {
+    throw classifyBackendError(err, "job inspection");
+  }
   const { payload, execution } = parseStoredData(job.data);
   if (job.id === undefined) {
     throw ApiError.internal("Job is missing its id.");
@@ -75,7 +110,7 @@ export async function toEasyMQJob(job: Job): Promise<EasyMQJob> {
     name: job.name,
     state,
     payload,
-    execution,
+    execution: execution ? toPublicExecution(execution) : null,
     attemptsMade: job.attemptsMade,
     priority: job.opts.priority ?? 0,
     delayMs: job.opts.delay ?? 0,
@@ -205,6 +240,17 @@ export class JobService {
 
   async createJob(opts: CreateJobOptions): Promise<EasyMQJob> {
     assertValidQueueName(opts.queue);
+    // Register BEFORE enqueueing so worker instances can always discover
+    // the new work. A failed enqueue may leave an empty registration behind;
+    // that is harmless and never rolled back (another instance may already
+    // be using the queue). Registry outages fail the request via
+    // classification: the job is never claimed as accepted
+    // when registration did not complete.
+    try {
+      await this.catalog.register(opts.queue);
+    } catch (err) {
+      throw classifyBackendError(err, "queue registration");
+    }
     const data: StoredJobData = {
       version: 1,
       payload: opts.payload ?? null,
@@ -221,7 +267,6 @@ export class JobService {
     } catch (err) {
       throw this.mapAddError(err, opts.queue);
     }
-    await this.catalog.register(opts.queue);
     return toEasyMQJob(job);
   }
 
@@ -254,18 +299,24 @@ export class JobService {
     // paginate per type and slice globally for an exact limit/offset page.
     // Ordering: jobs are concatenated in the requested state order, each in
     // BullMQ index order (asc parameter). Documented in the README.
-    const window = offset + limit;
+    // Fetch one extra item so `nextOffset` is exact, including when the
+    // result count is an exact multiple of the page size.
+    const window = offset + limit + 1;
     const seen = new Set<string>();
     const merged: Job[] = [];
-    for (const type of types ?? LISTABLE_STATES) {
-      const batch = await queue.getJobs([type], 0, window - 1, asc);
-      for (const job of batch) {
-        if (job.id !== undefined && !seen.has(job.id)) {
-          seen.add(job.id);
-          merged.push(job);
+    try {
+      for (const type of types ?? LISTABLE_STATES) {
+        const batch = await queue.getJobs([type], 0, window - 1, asc);
+        for (const job of batch) {
+          if (job.id !== undefined && !seen.has(job.id)) {
+            seen.add(job.id);
+            merged.push(job);
+          }
         }
+        if (merged.length >= window) break;
       }
-      if (merged.length >= window) break;
+    } catch (err) {
+      throw classifyBackendError(err, "job listing");
     }
     const page = merged.slice(offset, offset + limit);
     const mapped = await Promise.all(page.map((job) => toEasyMQJob(job)));
@@ -273,7 +324,7 @@ export class JobService {
       jobs: mapped,
       offset,
       limit,
-      nextOffset: mapped.length === limit ? offset + limit : null,
+      nextOffset: mapped.length === limit && merged.length > offset + limit ? offset + limit : null,
     };
   }
 
@@ -281,9 +332,19 @@ export class JobService {
     assertValidQueueName(queueName);
     await this.ensureRegistered(queueName);
     const queue = this.queues.getQueue(queueName);
-    const job = await queue.getJob(jobId);
+    let job: Job | undefined;
+    try {
+      job = await queue.getJob(jobId);
+    } catch (err) {
+      throw classifyBackendError(err, "job inspection");
+    }
     if (!job) throw ApiError.notFound("job", jobId, queueName);
-    const removed = await queue.remove(jobId);
+    let removed: number;
+    try {
+      removed = await queue.remove(jobId);
+    } catch (err) {
+      throw classifyBackendError(err, "job removal");
+    }
     if (removed === 0) {
       throw new ApiError("CONFLICT", `Job '${jobId}' is currently locked and cannot be removed.`, {
         resource: { type: "job", id: jobId, queue: queueName },
@@ -294,7 +355,12 @@ export class JobService {
   /** Manually retry a finished (failed or completed) job. */
   async retryJob(queueName: string, jobId: string): Promise<EasyMQJob> {
     const job = await this.requireJob(queueName, jobId);
-    const state = await job.getState();
+    let state: string;
+    try {
+      state = await job.getState();
+    } catch (err) {
+      throw classifyBackendError(err, "job inspection");
+    }
     if (state !== "failed" && state !== "completed") {
       throw new ApiError(
         "CONFLICT",
@@ -302,7 +368,11 @@ export class JobService {
         { resource: { type: "job", id: jobId, queue: queueName } },
       );
     }
-    await job.retry(state);
+    try {
+      await job.retry(state);
+    } catch (err) {
+      throw classifyBackendError(err, "job retry");
+    }
     return toEasyMQJob(job);
   }
 
@@ -312,11 +382,14 @@ export class JobService {
     try {
       await job.promote();
     } catch (err) {
-      throw new ApiError(
-        "CONFLICT",
-        `Job '${jobId}' cannot be promoted (only delayed jobs can be promoted).`,
-        { resource: { type: "job", id: jobId, queue: queueName }, cause: err },
-      );
+      if (isJobNotInStateError(err)) {
+        throw new ApiError(
+          "CONFLICT",
+          `Job '${jobId}' cannot be promoted (only delayed jobs can be promoted).`,
+          { resource: { type: "job", id: jobId, queue: queueName }, cause: err },
+        );
+      }
+      throw classifyBackendError(err, "job promotion");
     }
     return toEasyMQJob(job);
   }
@@ -327,11 +400,14 @@ export class JobService {
     try {
       await job.changeDelay(delayMs);
     } catch (err) {
-      throw new ApiError(
-        "CONFLICT",
-        `Delay of job '${jobId}' cannot be changed (only delayed jobs support this).`,
-        { resource: { type: "job", id: jobId, queue: queueName }, cause: err },
-      );
+      if (isJobNotInStateError(err)) {
+        throw new ApiError(
+          "CONFLICT",
+          `Delay of job '${jobId}' cannot be changed (only delayed jobs support this).`,
+          { resource: { type: "job", id: jobId, queue: queueName }, cause: err },
+        );
+      }
+      throw classifyBackendError(err, "job delay change");
     }
     return toEasyMQJob(job);
   }
@@ -342,14 +418,23 @@ export class JobService {
     }
     assertValidQueueName(queueName);
     await this.ensureRegistered(queueName);
-    await this.canceller.requestCancellation(queueName, jobId);
+    try {
+      await this.canceller.requestCancellation(queueName, jobId);
+    } catch (err) {
+      throw classifyBackendError(err, "job cancellation");
+    }
     return this.getJob(queueName, jobId);
   }
 
   private async requireJob(queueName: string, jobId: string): Promise<Job> {
     assertValidQueueName(queueName);
     await this.ensureRegistered(queueName);
-    const job = await this.queues.getQueue(queueName).getJob(jobId);
+    let job: Job | undefined;
+    try {
+      job = await this.queues.getQueue(queueName).getJob(jobId);
+    } catch (err) {
+      throw classifyBackendError(err, "job inspection");
+    }
     if (!job) throw ApiError.notFound("job", jobId, queueName);
     return job;
   }
@@ -362,14 +447,15 @@ export class JobService {
   }
 
   private mapAddError(err: unknown, queue: string): ApiError {
+    if (err instanceof ApiError) return err;
     const message = err instanceof Error ? err.message : String(err);
-    if (/deduplication/i.test(message)) {
-      return new ApiError("CONFLICT", `Job deduplication conflict: ${message}`, {
+    if (/duplicat/i.test(message)) {
+      return new ApiError("CONFLICT", "A job with the same deduplication id already exists.", {
         resource: { type: "queue", id: queue },
         cause: err,
       });
     }
-    return ApiError.internal(`Failed to create job: ${message}`, err);
+    return classifyBackendError(err, "job creation");
   }
 }
 

@@ -11,6 +11,15 @@ describe("createJobSchema", () => {
     expect(parsed.execution.type).toBe("http");
   });
 
+  it("rejects the removed per-job network-policy override", () => {
+    expect(() =>
+      createJobSchema.parse({
+        queue: "emails",
+        execution: { ...EXECUTION, allowPrivateNetwork: true },
+      }),
+    ).toThrow();
+  });
+
   it("accepts a fully-specified advanced job", () => {
     const parsed = createJobSchema.parse({
       queue: "emails",

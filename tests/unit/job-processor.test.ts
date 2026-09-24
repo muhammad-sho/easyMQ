@@ -16,6 +16,7 @@ function fakeJob(overrides: Partial<Job<StoredJobData>> = {}): Job<StoredJobData
   return {
     id: "job-1",
     attemptsMade: 0,
+    timestamp: 1_700_000_000_000,
     data: { version: 1, payload: { a: 1 }, execution: EXECUTION },
     ...overrides,
   } as Job<StoredJobData>;
@@ -42,8 +43,7 @@ function successExecutor(): Executor & { executed: () => number } {
 function cancellationStub(cancelled: boolean): CancellationCoordinator {
   return {
     isCancelled: vi.fn().mockResolvedValue(cancelled),
-    hasMarker: vi.fn().mockResolvedValue(cancelled),
-    clearMarker: vi.fn().mockResolvedValue(undefined),
+    clearMarkerIfMatch: vi.fn().mockResolvedValue(true),
   } as unknown as CancellationCoordinator;
 }
 
@@ -64,7 +64,12 @@ describe("JobProcessor", () => {
       message: "easymq:cancelled",
     });
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn() has no this-scoping hazard
-    expect(cancellation.clearMarker).toHaveBeenCalledWith("q", "job-1");
+    expect(cancellation.clearMarkerIfMatch).toHaveBeenCalledWith(
+      "q",
+      "job-1",
+      1_700_000_000_000,
+      0,
+    );
   });
 
   it("maps mid-attempt aborts with a marker to cancellation", async () => {

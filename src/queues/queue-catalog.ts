@@ -1,7 +1,7 @@
 import type { Redis } from "ioredis";
 import type { Logger } from "../infrastructure/logging/logger.js";
 import { waitForRedisReady } from "../infrastructure/redis/connection-manager.js";
-import { ApiError } from "../api/errors.js";
+import { ApiError, classifyBackendError } from "../api/errors.js";
 
 function assertValidQueueName(name: string): void {
   if (typeof name !== "string" || name.trim() === "" || name.length > 200) {
@@ -57,11 +57,16 @@ export class QueueCatalog {
   /** Idempotent registration. Returns true when the queue is newly added. */
   async register(queueName: string): Promise<boolean> {
     assertValidQueueName(queueName);
-    const results = await this.redis
-      .multi()
-      .sadd(this.queuesKey, queueName)
-      .publish(this.channel, queueName)
-      .exec();
+    let results: Array<[Error | null, unknown]> | null;
+    try {
+      results = await this.redis
+        .multi()
+        .sadd(this.queuesKey, queueName)
+        .publish(this.channel, queueName)
+        .exec();
+    } catch (err) {
+      throw classifyBackendError(err, "queue registration");
+    }
     if (!results) {
       throw ApiError.serviceUnavailable("Queue registration failed (no Redis response).");
     }
@@ -73,8 +78,12 @@ export class QueueCatalog {
   }
 
   async list(): Promise<string[]> {
-    const names = await this.redis.smembers(this.queuesKey);
-    return [...names].sort();
+    try {
+      const names = await this.redis.smembers(this.queuesKey);
+      return [...names].sort();
+    } catch (err) {
+      throw classifyBackendError(err, "queue listing");
+    }
   }
 
   onQueueRegistered(handler: QueueRegisteredHandler): void {

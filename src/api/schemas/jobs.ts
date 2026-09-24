@@ -37,7 +37,11 @@ export const httpExecutionSchema = z
     headers: z.record(z.string(), z.string()).optional(),
     body: z.union([z.string(), z.json()]).optional(),
     timeoutMs: z.number().int().min(100).max(600_000).optional(),
-    allowPrivateNetwork: z.boolean().optional(),
+    // NOTE: there is intentionally no per-job network-policy override.
+    // Private address access is controlled solely by the operator-side
+    // HTTP_ALLOW_PRIVATE_NETWORK configuration, so API callers cannot
+    // escalate network policy for an individual job. The strict schema
+    // rejects any submitted `allowPrivateNetwork` field.
   })
   .strict();
 

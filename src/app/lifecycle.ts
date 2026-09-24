@@ -16,9 +16,11 @@ function withTimeout(promise: Promise<void>, ms: number): Promise<void> {
  * Start the system for the configured role and wait for SIGTERM/SIGINT.
  *
  * Shutdown order: stop HTTP -> stop workers fetching new jobs -> allow
- * active jobs to finish within the deadline -> close QueueEvents ->
- * close subscriptions -> release BullMQ/Redis resources -> exit.
- * BullMQ recovers unfinished work after a crash; no custom recovery.
+ * active jobs to finish within the deadline (then abort in-flight attempts
+ * and force-close) -> close subscriptions -> release BullMQ/Redis resources
+ * -> exit. BullMQ recovers unfinished work after a crash; no custom recovery.
+ * The outer timeout below is a final backstop: WorkerManager.stop() already
+ * bounds the worker phase itself.
  */
 export async function run(config: AppConfig): Promise<void> {
   const system: BuiltSystem = await buildSystem(config);

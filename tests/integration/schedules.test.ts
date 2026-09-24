@@ -85,6 +85,33 @@ describe("recurring schedules", () => {
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 
+  it("paginates schedules with exact final pages", async () => {
+    const queue = `q-${prefix}-sched-paging`;
+    for (const id of [`pg-a-${prefix}`, `pg-b-${prefix}`]) {
+      await system.scheduleService.upsertSchedule({
+        id,
+        queue,
+        everyMs: 3_600_000,
+        payload: null,
+        execution: { type: "http", url: "https://example.com/hook" },
+      });
+    }
+    try {
+      const first = await system.scheduleService.listSchedules(queue, 0, 1);
+      expect(first.schedules).toHaveLength(1);
+      expect(first.nextOffset).toBe(1);
+      const last = await system.scheduleService.listSchedules(queue, 1, 1);
+      expect(last.schedules).toHaveLength(1);
+      expect(last.nextOffset).toBeNull();
+      const beyond = await system.scheduleService.listSchedules(queue, 2, 1);
+      expect(beyond.schedules).toHaveLength(0);
+      expect(beyond.nextOffset).toBeNull();
+    } finally {
+      await system.scheduleService.removeSchedule(queue, `pg-a-${prefix}`);
+      await system.scheduleService.removeSchedule(queue, `pg-b-${prefix}`);
+    }
+  });
+
   it("fires scheduled jobs through workers", async () => {
     const id = `fire-${prefix}`;
     await system.scheduleService.upsertSchedule({

@@ -1,5 +1,5 @@
 import type { JobSchedulerJson, RepeatOptions } from "bullmq";
-import { ApiError } from "../api/errors.js";
+import { ApiError, classifyBackendError } from "../api/errors.js";
 import type { AppConfig } from "../config/schema.js";
 import type { QueueFactory } from "../infrastructure/bullmq/queue-factory.js";
 import {
@@ -120,6 +120,14 @@ export class ScheduleService {
     if (opts.startDateMs !== undefined) repeatOpts.startDate = opts.startDateMs;
     if (opts.endDateMs !== undefined) repeatOpts.endDate = opts.endDateMs;
     if (opts.limit !== undefined) repeatOpts.limit = opts.limit;
+    // Register BEFORE upserting so workers can always discover the queue.
+    // A failed upsert may leave an empty registration; that is harmless
+    // and never rolled back.
+    try {
+      await this.catalog.register(opts.queue);
+    } catch (err) {
+      throw classifyBackendError(err, "queue registration");
+    }
     try {
       await queue.upsertJobScheduler(opts.id, repeatOpts, {
         name: opts.name ?? opts.id,
@@ -127,19 +135,22 @@ export class ScheduleService {
         opts: templateOpts,
       });
     } catch (err) {
-      throw ApiError.validation(
-        `Invalid schedule: ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err instanceof Error ? err.message : String(err) },
-      );
+      // Input was already validated above, so remaining failures are
+      // backend outages or unexpected BullMQ errors — never validation.
+      throw classifyBackendError(err, "schedule upsert");
     }
-    await this.catalog.register(opts.queue);
     return this.getSchedule(opts.queue, opts.id);
   }
 
   async getSchedule(queueName: string, id: string): Promise<EasyMQSchedule> {
     assertValidQueueName(queueName);
     await this.ensureRegistered(queueName);
-    const scheduler = await this.queues.getQueue(queueName).getJobScheduler(id);
+    let scheduler;
+    try {
+      scheduler = await this.queues.getQueue(queueName).getJobScheduler(id);
+    } catch (err) {
+      throw classifyBackendError(err, "schedule inspection");
+    }
     if (!scheduler) throw ApiError.notFound("schedule", id, queueName);
     return toEasyMQSchedule(queueName, scheduler);
   }
@@ -153,24 +164,34 @@ export class ScheduleService {
     );
     const start = Math.max(offset, 0);
     const queue = this.queues.getQueue(queueName);
-    const [schedulers, total] = await Promise.all([
-      queue.getJobSchedulers(start, start + pageLimit - 1, true),
-      queue.getJobSchedulersCount(),
-    ]);
+    let schedulers;
+    let total: number;
+    try {
+      [schedulers, total] = await Promise.all([
+        queue.getJobSchedulers(start, start + pageLimit - 1, true),
+        queue.getJobSchedulersCount(),
+      ]);
+    } catch (err) {
+      throw classifyBackendError(err, "schedule listing");
+    }
     const schedules = schedulers.map((s) => toEasyMQSchedule(queueName, s));
-    void total;
     return {
       schedules,
       offset: start,
       limit: pageLimit,
-      nextOffset: schedules.length === pageLimit ? start + pageLimit : null,
+      nextOffset: start + pageLimit < total ? start + pageLimit : null,
     };
   }
 
   async removeSchedule(queueName: string, id: string): Promise<void> {
     assertValidQueueName(queueName);
     await this.ensureRegistered(queueName);
-    const removed = await this.queues.getQueue(queueName).removeJobScheduler(id);
+    let removed: boolean;
+    try {
+      removed = await this.queues.getQueue(queueName).removeJobScheduler(id);
+    } catch (err) {
+      throw classifyBackendError(err, "schedule removal");
+    }
     if (!removed) throw ApiError.notFound("schedule", id, queueName);
   }
 

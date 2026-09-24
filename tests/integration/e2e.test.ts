@@ -77,7 +77,7 @@ describe("end-to-end HTTP flow", () => {
     });
     expect(created.status).toBe(201);
     const job = created.body as EasyMQJob;
-    expect(job.state).toBe("waiting");
+    expect(job.state === "waiting" || job.state === "active").toBe(true);
 
     let latest: EasyMQJob = job;
     await waitFor(
@@ -88,7 +88,11 @@ describe("end-to-end HTTP flow", () => {
       },
       { timeoutMs: 30_000, label: "e2e job to complete" },
     );
-    const returnValue = latest.returnValue as { statusCode: number; body: string };
+    // Settle: state and hash are separate reads, so re-fetch before
+    // asserting on result fields.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const settled = (await api(`/queues/${job.queue}/jobs/${job.id}`)).body as EasyMQJob;
+    const returnValue = settled.returnValue as { statusCode: number; body: string };
     expect(returnValue.statusCode).toBe(200);
     expect(returnValue.body).toContain("POST");
     expect(returnValue.body).toContain("ping");

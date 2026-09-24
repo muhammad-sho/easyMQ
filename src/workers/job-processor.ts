@@ -26,10 +26,12 @@ export interface JobProcessorOptions {
  * Translates BullMQ worker invocations into executor calls.
  *
  * Per attempt:
- *  1. Check the distributed cancellation marker (attempt-identity aware).
+ *  1. Check the distributed cancellation marker for this exact job
+ *     generation + attempt.
  *  2. Run the matching executor with BullMQ's AbortSignal.
  *  3. Map outcomes to easyMQ error semantics (cancelled => failed with
- *     a stable reason and no retry).
+ *     a stable reason and no retry; a completed attempt keeps its result
+ *     even if a cancellation marker lands afterwards).
  */
 export class JobProcessor {
   private readonly executors: Map<string, Executor>;
@@ -60,8 +62,15 @@ export class JobProcessor {
       }
 
       // Pre-attempt cancellation check (authoritative for this attempt).
-      if (await this.cancellation.isCancelled(queueName, jobId, job.attemptsMade)) {
-        await this.cancellation.clearMarker(queueName, jobId);
+      // Identity = immutable creation timestamp + attempt index, so a
+      // marker for another generation or attempt never matches.
+      if (await this.cancellation.isCancelled(queueName, jobId, job.timestamp, job.attemptsMade)) {
+        await this.cancellation.clearMarkerIfMatch(
+          queueName,
+          jobId,
+          job.timestamp,
+          job.attemptsMade,
+        );
         log?.info({ event: "job-cancelled" }, "Job attempt was cancelled");
         throw new UnrecoverableError(CANCELLATION_FAILED_REASON);
       }
@@ -85,7 +94,14 @@ export class JobProcessor {
         log?.info({ event: "job-executed", statusCode: result.statusCode }, "Job attempt executed");
         return result;
       } catch (err) {
-        throw await this.mapExecutionError(err, queueName, jobId, log);
+        throw await this.mapExecutionError(
+          err,
+          queueName,
+          jobId,
+          job.timestamp,
+          job.attemptsMade,
+          log,
+        );
       }
     };
   }
@@ -94,19 +110,21 @@ export class JobProcessor {
     err: unknown,
     queue: string,
     jobId: string,
+    jobTimestampMs: number,
+    attemptsMade: number,
     log: Logger | undefined,
   ): Promise<Error> {
     if (err instanceof UnrecoverableError) return err;
 
     if (err instanceof ExecutionAbortedError) {
-      // Aborted mid-attempt: if a cancellation marker exists for this
-      // job, this abort is the distributed cancellation taking effect.
-      if (await this.cancellation.hasMarker(queue, jobId)) {
-        await this.cancellation.clearMarker(queue, jobId);
+      // Aborted mid-attempt: if the marker still identifies this exact
+      // generation + attempt, the distributed cancellation took effect.
+      // Otherwise (e.g. shutdown) fail retryably so BullMQ can recover.
+      if (await this.cancellation.isCancelled(queue, jobId, jobTimestampMs, attemptsMade)) {
+        await this.cancellation.clearMarkerIfMatch(queue, jobId, jobTimestampMs, attemptsMade);
         log?.info({ event: "job-cancelled" }, "Job attempt aborted by cancellation");
         return new UnrecoverableError(CANCELLATION_FAILED_REASON);
       }
-      // Otherwise (e.g. shutdown) fail retryably so BullMQ can recover.
       return new Error("easymq:execution-aborted");
     }
 

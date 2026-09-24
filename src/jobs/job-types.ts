@@ -31,8 +31,6 @@ export interface HttpExecution {
   body?: Json | string | undefined;
   /** Per-job timeout override (ms). Falls back to HTTP_TIMEOUT_MS. */
   timeoutMs?: number | undefined;
-  /** Per-job private-network override. Falls back to HTTP_ALLOW_PRIVATE_NETWORK. */
-  allowPrivateNetwork?: boolean | undefined;
 }
 
 /**
@@ -41,6 +39,23 @@ export interface HttpExecution {
  * changing the queue architecture.
  */
 export type Execution = HttpExecution;
+
+/**
+ * API-safe execution view. Keeps useful metadata (type, URL, method, and
+ * non-secret options) but never carries header VALUES: those stay
+ * server-side where the worker needs them. Only header names are exposed
+ * so callers can see which headers were configured.
+ */
+export interface PublicHttpExecution {
+  type: "http";
+  url: string;
+  method?: HttpMethod | undefined;
+  headerNames?: string[] | undefined;
+  body?: Json | string | undefined;
+  timeoutMs?: number | undefined;
+}
+
+export type PublicExecution = PublicHttpExecution;
 
 /** Shape stored as BullMQ job data. `payload` and `execution` stay separate. */
 export interface StoredJobData {
@@ -107,7 +122,8 @@ export interface EasyMQJob {
   name: string;
   state: EasyMQJobState;
   payload: Json | null;
-  execution: Execution | null;
+  /** Redacted execution view — header values are never returned. */
+  execution: PublicExecution | null;
   attemptsMade: number;
   priority: number;
   delayMs: number;
