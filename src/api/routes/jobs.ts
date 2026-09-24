@@ -36,9 +36,7 @@ export function registerJobRoutes(app: AppInstance, services: ApiServices): void
       ...(input.lifo !== undefined ? { lifo: input.lifo } : {}),
       ...(input.deduplication !== undefined ? { deduplication: input.deduplication } : {}),
       ...(input.debounce !== undefined ? { debounce: input.debounce } : {}),
-      ...(input.removeOnComplete !== undefined
-        ? { removeOnComplete: input.removeOnComplete }
-        : {}),
+      ...(input.removeOnComplete !== undefined ? { removeOnComplete: input.removeOnComplete } : {}),
       ...(input.removeOnFail !== undefined ? { removeOnFail: input.removeOnFail } : {}),
     });
     return reply.status(201).send(job);

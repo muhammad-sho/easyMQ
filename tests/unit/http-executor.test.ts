@@ -1,13 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { AddressInfo } from "node:net";
+import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { JobExecutionContext } from "../../src/executors/executor.js";
-import { ExecutionAbortedError } from "../../src/executors/executor.js";
-import {
-  ExecutorError,
-  HttpExecutor,
-  redactUrlForLogging,
-} from "../../src/executors/http-executor.js";
+import { ExecutionAbortedError, type JobExecutionContext } from "../../src/executors/executor.js";
+import { HttpExecutor, redactUrlForLogging } from "../../src/executors/http-executor.js";
 
 const OPTIONS = {
   timeoutMs: 5000,
@@ -168,7 +163,7 @@ describe("HttpExecutor", () => {
       });
       expect(result.body).toContain('"authorization":null');
     } finally {
-      delete globalThis.__CROSS_ORIGIN__;
+      globalThis.__CROSS_ORIGIN__ = undefined;
       await new Promise<void>((resolve, reject) =>
         second.close((err) => (err ? reject(err) : resolve())),
       );
@@ -223,6 +218,5 @@ describe("redactUrlForLogging", () => {
 });
 
 declare global {
-  // eslint-disable-next-line no-var
   var __CROSS_ORIGIN__: string | undefined;
 }

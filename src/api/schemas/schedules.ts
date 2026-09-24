@@ -1,9 +1,5 @@
 import { z } from "zod";
-import {
-  backoffSchema,
-  executionSchema,
-  retentionSchema,
-} from "./jobs.js";
+import { backoffSchema, executionSchema, retentionSchema } from "./jobs.js";
 import { jobIdSchema, queueNameSchema } from "./common.js";
 
 export const upsertScheduleSchema = z

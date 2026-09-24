@@ -1,11 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ApiError } from "../../src/api/errors.js";
-import {
-  buildTestSystem,
-  closeTestSystem,
-  uniquePrefix,
-  type TestSystem,
-} from "./helpers.js";
+import { buildTestSystem, closeTestSystem, uniquePrefix, type TestSystem } from "./helpers.js";
 
 describe("queue registration and control", () => {
   const prefix = uniquePrefix("queues");
@@ -35,11 +30,13 @@ describe("queue registration and control", () => {
 
   it("rejects invalid queue names", async () => {
     await expect(system.catalog.register("")).rejects.toBeInstanceOf(ApiError);
-    await expect(system.jobService.createJob({
-      queue: "",
-      payload: null,
-      execution: { type: "http", url: "https://example.com/" },
-    })).rejects.toBeInstanceOf(ApiError);
+    await expect(
+      system.jobService.createJob({
+        queue: "",
+        payload: null,
+        execution: { type: "http", url: "https://example.com/" },
+      }),
+    ).rejects.toBeInstanceOf(ApiError);
   });
 
   it("pauses and resumes queues, reporting counts", async () => {

@@ -5,10 +5,9 @@ import { ApiError } from "../api/errors.js";
 
 function assertValidQueueName(name: string): void {
   if (typeof name !== "string" || name.trim() === "" || name.length > 200) {
-    throw ApiError.validation(
-      "Queue name must be a non-empty string of at most 200 characters.",
-      { queue: name },
-    );
+    throw ApiError.validation("Queue name must be a non-empty string of at most 200 characters.", {
+      queue: name,
+    });
   }
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(name)) {

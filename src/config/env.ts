@@ -1,30 +1,19 @@
 import { z } from "zod";
 import { configSchema, type AppConfig } from "./schema.js";
 
-function parseBooleanString(
-  value: string | undefined,
-  defaultValue: boolean,
-): boolean {
+function parseBooleanString(value: string | undefined, defaultValue: boolean): boolean {
   if (value === undefined || value.trim() === "") return defaultValue;
   const normalized = value.trim().toLowerCase();
   if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
-  throw new Error(
-    `Invalid boolean value ${JSON.stringify(value)} (expected true/false).`,
-  );
+  throw new Error(`Invalid boolean value ${JSON.stringify(value)} (expected true/false).`);
 }
 
-function parseNumberString(
-  value: string | undefined,
-  defaultValue: number,
-  name: string,
-): number {
+function parseNumberString(value: string | undefined, defaultValue: number, name: string): number {
   if (value === undefined || value.trim() === "") return defaultValue;
   const parsed = Number(value.trim());
   if (!Number.isFinite(parsed)) {
-    throw new Error(
-      `Invalid number value ${JSON.stringify(value)} for ${name}.`,
-    );
+    throw new Error(`Invalid number value ${JSON.stringify(value)} for ${name}.`);
   }
   return parsed;
 }
@@ -50,30 +39,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       apiToken: parseOptionalString(env["API_TOKEN"]),
       authDisabled: parseBooleanString(env["AUTH_DISABLED"], false),
       appRole: env["APP_ROLE"]?.trim() || "both",
-      workerConcurrency: parseNumberString(
-        env["WORKER_CONCURRENCY"],
-        10,
-        "WORKER_CONCURRENCY",
-      ),
-      httpTimeoutMs: parseNumberString(
-        env["HTTP_TIMEOUT_MS"],
-        30_000,
-        "HTTP_TIMEOUT_MS",
-      ),
+      workerConcurrency: parseNumberString(env["WORKER_CONCURRENCY"], 10, "WORKER_CONCURRENCY"),
+      httpTimeoutMs: parseNumberString(env["HTTP_TIMEOUT_MS"], 30_000, "HTTP_TIMEOUT_MS"),
       httpMaxResponseBytes: parseNumberString(
         env["HTTP_MAX_RESPONSE_BYTES"],
         1_048_576,
         "HTTP_MAX_RESPONSE_BYTES",
       ),
-      httpMaxRedirects: parseNumberString(
-        env["HTTP_MAX_REDIRECTS"],
-        5,
-        "HTTP_MAX_REDIRECTS",
-      ),
-      httpAllowPrivateNetwork: parseBooleanString(
-        env["HTTP_ALLOW_PRIVATE_NETWORK"],
-        false,
-      ),
+      httpMaxRedirects: parseNumberString(env["HTTP_MAX_REDIRECTS"], 5, "HTTP_MAX_REDIRECTS"),
+      httpAllowPrivateNetwork: parseBooleanString(env["HTTP_ALLOW_PRIVATE_NETWORK"], false),
       cancellationTtlSeconds: parseNumberString(
         env["CANCELLATION_TTL_SECONDS"],
         300,
@@ -86,13 +60,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ),
       logLevel: env["LOG_LEVEL"]?.trim() || "info",
       logPretty: parseBooleanString(env["LOG_PRETTY"], false),
-      defaultAttempts: parseNumberString(
-        env["DEFAULT_ATTEMPTS"],
-        3,
-        "DEFAULT_ATTEMPTS",
-      ),
-      defaultBackoffType:
-        env["DEFAULT_BACKOFF_TYPE"]?.trim() || "exponential",
+      defaultAttempts: parseNumberString(env["DEFAULT_ATTEMPTS"], 3, "DEFAULT_ATTEMPTS"),
+      defaultBackoffType: env["DEFAULT_BACKOFF_TYPE"]?.trim() || "exponential",
       defaultBackoffDelayMs: parseNumberString(
         env["DEFAULT_BACKOFF_DELAY_MS"],
         5000,
@@ -108,21 +77,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         5000,
         "DEFAULT_REMOVE_ON_FAIL_COUNT",
       ),
-      pageDefaultLimit: parseNumberString(
-        env["PAGE_DEFAULT_LIMIT"],
-        50,
-        "PAGE_DEFAULT_LIMIT",
-      ),
-      pageMaxLimit: parseNumberString(
-        env["PAGE_MAX_LIMIT"],
-        200,
-        "PAGE_MAX_LIMIT",
-      ),
+      pageDefaultLimit: parseNumberString(env["PAGE_DEFAULT_LIMIT"], 50, "PAGE_DEFAULT_LIMIT"),
+      pageMaxLimit: parseNumberString(env["PAGE_MAX_LIMIT"], 200, "PAGE_MAX_LIMIT"),
     };
   } catch (err) {
-    throw new Error(
-      `Invalid configuration: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new Error(`Invalid configuration: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const result = configSchema.safeParse(raw);

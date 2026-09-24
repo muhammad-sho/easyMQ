@@ -1,9 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import fastify, {
-  type FastifyInstance,
-  type FastifyTypeProviderDefault,
-} from "fastify";
+import fastify, { type FastifyInstance, type FastifyTypeProviderDefault } from "fastify";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { ApiError } from "./errors.js";
@@ -39,10 +36,10 @@ export type AppInstance = FastifyInstance<
 /** Health probes stay unauthenticated so orchestrators can check them. */
 const PUBLIC_PATHS = new Set(["/health/live", "/health/ready"]);
 
-function isAuthorized(request: {
-  url: string;
-  headers: Record<string, unknown>;
-}, config: AppConfig): boolean {
+function isAuthorized(
+  request: { url: string; headers: Record<string, string | string[] | undefined> },
+  config: AppConfig,
+): boolean {
   const path = request.url.split("?", 1)[0] ?? request.url;
   if (PUBLIC_PATHS.has(path)) return true;
   if (config.authDisabled) return true;
@@ -67,10 +64,10 @@ export async function buildApp(services: ApiServices): Promise<AppInstance> {
   await app.register(rateLimit, { max: 1000, timeWindow: "1 minute" });
 
   app.addHook("onRequest", async (request, reply) => {
-    if (!isAuthorized({ url: request.url, headers: request.headers as Record<string, unknown> }, config)) {
-      return reply.status(401).send(
-        new ApiError("UNAUTHENTICATED", "Missing or invalid Bearer token.").toBody(),
-      );
+    if (!isAuthorized(request, config)) {
+      return reply
+        .status(401)
+        .send(new ApiError("UNAUTHENTICATED", "Missing or invalid Bearer token.").toBody());
     }
   });
 
@@ -91,14 +88,16 @@ export async function buildApp(services: ApiServices): Promise<AppInstance> {
     request.log.error({ err }, "Unhandled request error");
     const statusCode =
       typeof (err as { statusCode?: unknown }).statusCode === "number"
-        ? ((err as { statusCode: number }).statusCode)
+        ? (err as { statusCode: number }).statusCode
         : 500;
-    return reply.status(statusCode >= 400 && statusCode < 600 ? statusCode : 500).send(
-      new ApiError(
-        statusCode === 503 ? "SERVICE_UNAVAILABLE" : "INTERNAL_ERROR",
-        statusCode >= 500 ? "Internal server error." : "Request failed.",
-      ).toBody(),
-    );
+    return reply
+      .status(statusCode >= 400 && statusCode < 600 ? statusCode : 500)
+      .send(
+        new ApiError(
+          statusCode === 503 ? "SERVICE_UNAVAILABLE" : "INTERNAL_ERROR",
+          statusCode >= 500 ? "Internal server error." : "Request failed.",
+        ).toBody(),
+      );
   });
 
   app.setNotFoundHandler((request, reply) => {

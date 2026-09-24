@@ -7,13 +7,11 @@ async function main(): Promise<void> {
 }
 
 process.on("unhandledRejection", (reason) => {
-  // eslint-disable-next-line no-console
   console.error("Unhandled rejection:", reason);
   process.exitCode = 1;
 });
 
 main().catch((err: unknown) => {
-  // eslint-disable-next-line no-console
   console.error(err instanceof Error ? err.message : err);
   process.exitCode = 1;
 });

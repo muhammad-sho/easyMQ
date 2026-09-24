@@ -1,9 +1,4 @@
-import {
-  UnrecoverableError,
-  type Job,
-  type JobsOptions,
-  type JobType,
-} from "bullmq";
+import { UnrecoverableError, type Job, type JobsOptions, type JobType } from "bullmq";
 import { ApiError } from "../api/errors.js";
 import type { AppConfig } from "../config/schema.js";
 import type { QueueFactory } from "../infrastructure/bullmq/queue-factory.js";
@@ -13,6 +8,7 @@ import {
   type EasyMQJob,
   type EasyMQJobState,
   type Execution,
+  type HttpExecution,
   type Json,
   type ListJobsOptions,
   type RetentionOptions,
@@ -34,7 +30,7 @@ const LISTABLE_STATES: JobType[] = [
 
 function toJobType(state: EasyMQJobState): JobType | undefined {
   if (state === "unknown") return undefined;
-  return state as JobType;
+  return state;
 }
 
 /** Extract easyMQ payload/execution from BullMQ job data (never throws). */
@@ -45,24 +41,30 @@ export function parseStoredData(data: unknown): {
   if (typeof data !== "object" || data === null) {
     return { payload: null, execution: null };
   }
-  const record = data as Record<string, unknown>;
-  if (record["version"] !== 1) return { payload: null, execution: null };
-  const execution = record["execution"];
-  if (
-    typeof execution !== "object" ||
-    execution === null ||
-    (execution as { type?: unknown }).type !== "http"
-  ) {
+  const record = data as {
+    version?: unknown;
+    payload?: Json | undefined;
+    execution?: unknown;
+  };
+  if (record.version !== 1) return { payload: null, execution: null };
+  const execution: unknown = record.execution;
+  if (!isHttpExecution(execution)) {
     return { payload: null, execution: null };
   }
   return {
-    payload: (record["payload"] ?? null) as Json | null,
-    execution: execution as Execution,
+    payload: record.payload ?? null,
+    execution,
   };
 }
 
+function isHttpExecution(value: unknown): value is HttpExecution {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("type" in value) || !("url" in value)) return false;
+  return value.type === "http" && typeof value.url === "string";
+}
+
 export async function toEasyMQJob(job: Job): Promise<EasyMQJob> {
-  const state = (await job.getState()) as EasyMQJobState;
+  const state = await job.getState();
   const { payload, execution } = parseStoredData(job.data);
   if (job.id === undefined) {
     throw ApiError.internal("Job is missing its id.");
@@ -137,10 +139,9 @@ export function toBullMQJobOptions(
 
   if (opts.priority !== undefined) {
     if (!Number.isInteger(opts.priority) || opts.priority < 0 || opts.priority > MAX_PRIORITY) {
-      throw ApiError.validation(
-        `Priority must be an integer between 0 and ${MAX_PRIORITY}.`,
-        { priority: opts.priority },
-      );
+      throw ApiError.validation(`Priority must be an integer between 0 and ${MAX_PRIORITY}.`, {
+        priority: opts.priority,
+      });
     }
     jobOptions.priority = opts.priority;
   }
@@ -152,9 +153,7 @@ export function toBullMQJobOptions(
     jobOptions.deduplication = {
       id: opts.deduplication.id,
       ...(opts.deduplication.ttlMs !== undefined ? { ttl: opts.deduplication.ttlMs } : {}),
-      ...(opts.deduplication.replace !== undefined
-        ? { replace: opts.deduplication.replace }
-        : {}),
+      ...(opts.deduplication.replace !== undefined ? { replace: opts.deduplication.replace } : {}),
     };
   } else if (opts.debounce) {
     jobOptions.delay = opts.debounce.delayMs;
@@ -165,10 +164,7 @@ export function toBullMQJobOptions(
     };
   }
 
-  jobOptions.removeOnComplete = mapRetention(
-    opts.removeOnComplete,
-    defaults.removeOnCompleteCount,
-  );
+  jobOptions.removeOnComplete = mapRetention(opts.removeOnComplete, defaults.removeOnCompleteCount);
   jobOptions.removeOnFail = mapRetention(opts.removeOnFail, defaults.removeOnFailCount);
 
   return jobOptions;
@@ -217,7 +213,11 @@ export class JobService {
     const queue = this.queues.getQueue(opts.queue);
     let job: Job;
     try {
-      job = await queue.add(opts.name ?? "default", data, toBullMQJobOptions(opts, this.defaults()));
+      job = await queue.add(
+        opts.name ?? "default",
+        data,
+        toBullMQJobOptions(opts, this.defaults()),
+      );
     } catch (err) {
       throw this.mapAddError(err, opts.queue);
     }
@@ -242,9 +242,7 @@ export class JobService {
 
     let types: JobType[] | undefined;
     if (opts.states && opts.states.length > 0) {
-      const mapped = opts.states
-        .map(toJobType)
-        .filter((t): t is JobType => t !== undefined);
+      const mapped = opts.states.map(toJobType).filter((t): t is JobType => t !== undefined);
       if (mapped.length === 0) {
         return { jobs: [], offset, limit, nextOffset: null };
       }
@@ -324,11 +322,7 @@ export class JobService {
   }
 
   /** Change the delay of a delayed job. */
-  async changeJobDelay(
-    queueName: string,
-    jobId: string,
-    delayMs: number,
-  ): Promise<EasyMQJob> {
+  async changeJobDelay(queueName: string, jobId: string, delayMs: number): Promise<EasyMQJob> {
     const job = await this.requireJob(queueName, jobId);
     try {
       await job.changeDelay(delayMs);

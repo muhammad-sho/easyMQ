@@ -84,10 +84,7 @@ export class RedisConnectionManager {
       connectionName: `easymq:${label}`,
     });
     client.on("error", (err: Error) => {
-      this.logger?.error(
-        { err, event: "redis-error", connection: label },
-        "Redis error",
-      );
+      this.logger?.error({ err, event: "redis-error", connection: label }, "Redis error");
     });
     this.clients.add(client);
     return client;

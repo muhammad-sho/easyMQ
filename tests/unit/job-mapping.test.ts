@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../src/api/errors.js";
-import {
-  cancelledError,
-  parseStoredData,
-  toBullMQJobOptions,
-} from "../../src/jobs/job-service.js";
+import { cancelledError, parseStoredData, toBullMQJobOptions } from "../../src/jobs/job-service.js";
 
 const DEFAULTS = {
   attempts: 3,
@@ -18,10 +14,7 @@ const EXECUTION = { type: "http" as const, url: "https://example.com/hook" };
 
 describe("toBullMQJobOptions", () => {
   it("maps defaults for a minimal job", () => {
-    const opts = toBullMQJobOptions(
-      { queue: "q", payload: null, execution: EXECUTION },
-      DEFAULTS,
-    );
+    const opts = toBullMQJobOptions({ queue: "q", payload: null, execution: EXECUTION }, DEFAULTS);
     expect(opts.attempts).toBe(3);
     expect(opts.backoff).toEqual({ type: "exponential", delay: 5000 });
     expect(opts.removeOnComplete).toEqual({ count: 1000 });
@@ -139,7 +132,7 @@ describe("parseStoredData", () => {
 });
 
 describe("cancelledError", () => {
-  it("is unrecoverable with the stable cancellation reason", async () => {
+  it("is unrecoverable with the stable cancellation reason", () => {
     const err = cancelledError();
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe("UnrecoverableError");

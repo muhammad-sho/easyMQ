@@ -1,5 +1,4 @@
 import type { AddressInfo } from "node:net";
-import { Redis } from "ioredis";
 import { loadConfig, type AppConfig } from "../../src/config/env.js";
 import { QueueCatalog } from "../../src/queues/queue-catalog.js";
 import { QueueFactory } from "../../src/infrastructure/bullmq/queue-factory.js";
@@ -37,7 +36,7 @@ export function testConfig(prefix: string, env: Record<string, string> = {}): Ap
 }
 
 export async function waitFor(
-  condition: () => Promise<boolean>,
+  condition: () => boolean | Promise<boolean>,
   options: { timeoutMs?: number; intervalMs?: number; label?: string } = {},
 ): Promise<void> {
   const { timeoutMs = 20_000, intervalMs = 100, label = "condition" } = options;

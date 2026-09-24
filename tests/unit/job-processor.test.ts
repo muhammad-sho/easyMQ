@@ -25,9 +25,15 @@ function successExecutor(): Executor & { executed: () => number } {
   let calls = 0;
   const executor: Executor = {
     type: "http",
-    execute: async (): Promise<ExecutionResult> => {
+    execute: (): Promise<ExecutionResult> => {
       calls += 1;
-      return { statusCode: 200, headers: {}, body: "ok", bodyTruncated: false, durationMs: 1 };
+      return Promise.resolve({
+        statusCode: 200,
+        headers: {},
+        body: "ok",
+        bodyTruncated: false,
+        durationMs: 1,
+      });
     },
   };
   return Object.assign(executor, { executed: () => calls });
@@ -57,15 +63,14 @@ describe("JobProcessor", () => {
       name: "UnrecoverableError",
       message: "easymq:cancelled",
     });
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn() has no this-scoping hazard
     expect(cancellation.clearMarker).toHaveBeenCalledWith("q", "job-1");
   });
 
   it("maps mid-attempt aborts with a marker to cancellation", async () => {
     const aborting: Executor = {
       type: "http",
-      execute: async () => {
-        throw new ExecutionAbortedError();
-      },
+      execute: () => Promise.reject<ExecutionResult>(new ExecutionAbortedError()),
     };
     const cancellation = cancellationStub(true);
     const processor = new JobProcessor({ executors: [aborting] }, cancellation);
@@ -78,12 +83,12 @@ describe("JobProcessor", () => {
   it("fails retryably on aborts without a marker", async () => {
     const aborting: Executor = {
       type: "http",
-      execute: async () => {
-        throw new ExecutionAbortedError();
-      },
+      execute: () => Promise.reject<ExecutionResult>(new ExecutionAbortedError()),
     };
     const processor = new JobProcessor({ executors: [aborting] }, cancellationStub(false));
-    const err = await processor.handler("q")(fakeJob()).catch((e: unknown) => e);
+    const err = await processor
+      .handler("q")(fakeJob())
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(UnrecoverableError);
   });
@@ -91,22 +96,17 @@ describe("JobProcessor", () => {
   it("marks deterministic executor failures as unrecoverable", async () => {
     const failing: Executor = {
       type: "http",
-      execute: async () => {
-        throw new ExecutorError("SSRF_BLOCKED", "Blocked.");
-      },
+      execute: () => Promise.reject<ExecutionResult>(new ExecutorError("SSRF_BLOCKED", "Blocked.")),
     };
     const processor = new JobProcessor({ executors: [failing] }, cancellationStub(false));
-    await expect(processor.handler("q")(fakeJob())).rejects.toBeInstanceOf(
-      UnrecoverableError,
-    );
+    await expect(processor.handler("q")(fakeJob())).rejects.toBeInstanceOf(UnrecoverableError);
   });
 
   it("keeps transient executor failures retryable with stable codes", async () => {
     const failing: Executor = {
       type: "http",
-      execute: async () => {
-        throw new ExecutorError("EXECUTOR_TIMEOUT", "Timed out.");
-      },
+      execute: () =>
+        Promise.reject<ExecutionResult>(new ExecutorError("EXECUTOR_TIMEOUT", "Timed out.")),
     };
     const processor = new JobProcessor({ executors: [failing] }, cancellationStub(false));
     const err = (await processor
@@ -118,13 +118,16 @@ describe("JobProcessor", () => {
   });
 
   it("fails permanently on unknown execution types and malformed data", async () => {
-    const processor = new JobProcessor(
-      { executors: [successExecutor()] },
-      cancellationStub(false),
-    );
+    const processor = new JobProcessor({ executors: [successExecutor()] }, cancellationStub(false));
     await expect(
       processor.handler("q")(
-        fakeJob({ data: { version: 1, payload: null, execution: { type: "smtp" } } as unknown as StoredJobData }),
+        fakeJob({
+          data: {
+            version: 1,
+            payload: null,
+            execution: { type: "smtp" },
+          } as unknown as StoredJobData,
+        }),
       ),
     ).rejects.toBeInstanceOf(UnrecoverableError);
   });

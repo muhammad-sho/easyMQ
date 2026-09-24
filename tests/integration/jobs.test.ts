@@ -138,8 +138,6 @@ describe("job lifecycle", () => {
       await waitForJob(system.jobService, queue, created.id, "failed");
       await system.jobService.retryJob(queue, created.id);
       const done = await waitForJob(system.jobService, queue, created.id, "completed");
-      process.stdout.write("DBG calls=" + JSON.stringify(system.fake.calls.filter((c) => c.jobId === created.id)) + "\n");
-      const raw = await system.queues.getQueue(queue).getJob(created.id);
       expect(done.returnValue).toMatchObject({ statusCode: 200, body: "recovered" });
     } finally {
       system.fake.setBehavior({ kind: "success" });

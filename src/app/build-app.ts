@@ -79,10 +79,7 @@ export async function buildSystem(config: AppConfig): Promise<BuiltSystem> {
   const healthService = new HealthService(config.appRole);
   healthService.addCheck({
     name: "redis",
-    check: async () => {
-      const pong = await shared.ping();
-      if (pong !== "PONG") throw new Error(`Unexpected Redis PING reply: ${pong}`);
-    },
+    check: () => shared.ping().then(() => undefined),
   });
 
   const servesApi = config.appRole === "api" || config.appRole === "both";

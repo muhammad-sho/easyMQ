@@ -49,15 +49,11 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ APP_ROLE: "api" })).toThrow(/API_TOKEN/);
     // Worker-only role does not serve the API, so no token is needed.
     expect(loadConfig({ APP_ROLE: "worker" }).apiToken).toBeUndefined();
-    expect(
-      loadConfig({ API_TOKEN: "secret" }).apiToken,
-    ).toBe("secret");
+    expect(loadConfig({ API_TOKEN: "secret" }).apiToken).toBe("secret");
   });
 
   it("rejects invalid numbers, booleans and enums with clear errors", () => {
-    expect(() => loadConfig({ AUTH_DISABLED: "true", API_PORT: "abc" })).toThrow(
-      /API_PORT/,
-    );
+    expect(() => loadConfig({ AUTH_DISABLED: "true", API_PORT: "abc" })).toThrow(/API_PORT/);
     expect(() => loadConfig({ AUTH_DISABLED: "maybe" })).toThrow(/boolean/);
     expect(() => loadConfig({ AUTH_DISABLED: "true", APP_ROLE: "nope" })).toThrow();
     expect(() => loadConfig({ AUTH_DISABLED: "true", API_PORT: "-1" })).toThrow();

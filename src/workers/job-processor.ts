@@ -1,9 +1,6 @@
 import { UnrecoverableError, type Job } from "bullmq";
 import type { Logger } from "../infrastructure/logging/logger.js";
-import {
-  CANCELLATION_FAILED_REASON,
-  type StoredJobData,
-} from "../jobs/job-types.js";
+import { CANCELLATION_FAILED_REASON, type StoredJobData } from "../jobs/job-types.js";
 import { parseStoredData } from "../jobs/job-service.js";
 import {
   ExecutionAbortedError,
@@ -71,9 +68,7 @@ export class JobProcessor {
 
       const executor = this.executors.get(execution.type);
       if (!executor) {
-        throw new UnrecoverableError(
-          `easymq:unsupported-execution-type:${execution.type}`,
-        );
+        throw new UnrecoverableError(`easymq:unsupported-execution-type:${execution.type}`);
       }
 
       const ctx: JobExecutionContext = {
@@ -87,10 +82,7 @@ export class JobProcessor {
 
       try {
         const result = await executor.execute(ctx);
-        log?.info(
-          { event: "job-executed", statusCode: result.statusCode },
-          "Job attempt executed",
-        );
+        log?.info({ event: "job-executed", statusCode: result.statusCode }, "Job attempt executed");
         return result;
       } catch (err) {
         throw await this.mapExecutionError(err, queueName, jobId, log);

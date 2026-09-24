@@ -47,9 +47,7 @@ describe("createJobSchema", () => {
   });
 
   it("rejects invalid input with useful errors", () => {
-    expect(() =>
-      createJobSchema.parse({ queue: "", execution: EXECUTION }),
-    ).toThrow();
+    expect(() => createJobSchema.parse({ queue: "", execution: EXECUTION })).toThrow();
     expect(() =>
       createJobSchema.parse({
         queue: "q",
@@ -107,9 +105,9 @@ describe("upsertScheduleSchema", () => {
   });
 
   it("requires exactly one of pattern or everyMs", () => {
-    expect(() =>
-      upsertScheduleSchema.parse({ id: "s", queue: "q", execution: EXECUTION }),
-    ).toThrow(/pattern.*everyMs/);
+    expect(() => upsertScheduleSchema.parse({ id: "s", queue: "q", execution: EXECUTION })).toThrow(
+      /pattern.*everyMs/,
+    );
     expect(() =>
       upsertScheduleSchema.parse({
         id: "s",

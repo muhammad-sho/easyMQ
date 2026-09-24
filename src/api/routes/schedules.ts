@@ -25,9 +25,7 @@ export function registerScheduleRoutes(app: AppInstance, services: ApiServices):
       ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
       ...(input.backoff !== undefined ? { backoff: input.backoff } : {}),
       ...(input.priority !== undefined ? { priority: input.priority } : {}),
-      ...(input.removeOnComplete !== undefined
-        ? { removeOnComplete: input.removeOnComplete }
-        : {}),
+      ...(input.removeOnComplete !== undefined ? { removeOnComplete: input.removeOnComplete } : {}),
       ...(input.removeOnFail !== undefined ? { removeOnFail: input.removeOnFail } : {}),
     });
   });
@@ -35,11 +33,7 @@ export function registerScheduleRoutes(app: AppInstance, services: ApiServices):
   app.get("/queues/:queue/schedules", async (request) => {
     const params = parseWith(queueParamsSchema, request.params, "path parameters");
     const pagination = parseWith(paginationQuerySchema, request.query, "query string");
-    return scheduleService.listSchedules(
-      params.queue,
-      pagination.offset,
-      pagination.limit,
-    );
+    return scheduleService.listSchedules(params.queue, pagination.offset, pagination.limit);
   });
 
   app.get("/queues/:queue/schedules/:id", async (request) => {

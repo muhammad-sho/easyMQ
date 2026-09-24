@@ -5,7 +5,7 @@ import type { ApiServices } from "../server.js";
 export function registerHealthRoutes(app: AppInstance, services: ApiServices): void {
   const { healthService } = services;
 
-  app.get("/health/live", async () => {
+  app.get("/health/live", () => {
     return healthService.liveness();
   });
 

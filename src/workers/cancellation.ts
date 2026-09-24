@@ -84,19 +84,12 @@ export class CancellationCoordinator {
       "NX",
     );
     await this.redis.publish(this.channel, JSON.stringify({ queue, jobId }));
-    this.logger?.info(
-      { event: "cancellation-requested", queue, jobId },
-      "Cancellation requested",
-    );
+    this.logger?.info({ event: "cancellation-requested", queue, jobId }, "Cancellation requested");
     return marker;
   }
 
   /** True when the given attempt has been cancelled. Consumes nothing. */
-  async isCancelled(
-    queue: string,
-    jobId: string,
-    attemptsMade: number,
-  ): Promise<boolean> {
+  async isCancelled(queue: string, jobId: string, attemptsMade: number): Promise<boolean> {
     const raw = await this.redis.get(this.markerKey(queue, jobId));
     if (!raw) return false;
     try {

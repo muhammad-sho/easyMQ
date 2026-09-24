@@ -71,13 +71,8 @@ export class ApiError extends Error {
     };
   }
 
-  static notFound(
-    type: string,
-    id: string,
-    queue?: string,
-  ): ApiError {
-    const resource: ApiErrorResource =
-      queue !== undefined ? { type, id, queue } : { type, id };
+  static notFound(type: string, id: string, queue?: string): ApiError {
+    const resource: ApiErrorResource = queue !== undefined ? { type, id, queue } : { type, id };
     return new ApiError("NOT_FOUND", `${type} '${id}' not found.`, {
       resource,
     });
@@ -107,10 +102,7 @@ export class ApiError extends Error {
 /** Map any thrown value to an ApiError (never leak internals). */
 export function toApiError(err: unknown): ApiError {
   if (err instanceof ApiError) return err;
-  return ApiError.internal(
-    "Internal server error.",
-    err instanceof Error ? err : undefined,
-  );
+  return ApiError.internal("Internal server error.", err instanceof Error ? err : undefined);
 }
 
 export function statusForCode(code: EasyMQErrorCode): number {

@@ -69,8 +69,8 @@ describe("distributed cancellation", () => {
     await expect(system.jobService.cancelJob(queue, created.id)).rejects.toMatchObject({
       code: "JOB_NOT_ACTIVE",
     });
-    await expect(
-      system.jobService.cancelJob(queue, "missing-id"),
-    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(system.jobService.cancelJob(queue, "missing-id")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
   });
 });

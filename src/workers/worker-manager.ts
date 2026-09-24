@@ -89,10 +89,7 @@ export class WorkerManager {
       logger?.info({ event: "job-active", queue: queueName, jobId: job.id }, "Job active");
     });
     worker.on("completed", (job) => {
-      logger?.info(
-        { event: "job-completed", queue: queueName, jobId: job.id },
-        "Job completed",
-      );
+      logger?.info({ event: "job-completed", queue: queueName, jobId: job.id }, "Job completed");
     });
     worker.on("failed", (job, err) => {
       logger?.warn(
@@ -107,10 +104,7 @@ export class WorkerManager {
       logger?.error({ err, event: "worker-error", queue: queueName }, "Worker error");
     });
     events.on("error", (err) => {
-      logger?.error(
-        { err, event: "queue-events-error", queue: queueName },
-        "QueueEvents error",
-      );
+      logger?.error({ err, event: "queue-events-error", queue: queueName }, "QueueEvents error");
     });
 
     this.managed.set(queueName, { worker, events });

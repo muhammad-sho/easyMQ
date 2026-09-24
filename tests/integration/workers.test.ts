@@ -36,10 +36,9 @@ describe("worker discovery and distribution", () => {
       payload: null,
       execution: { type: "http", url: "https://example.com/hook" },
     });
-    await waitFor(
-      async () => system.manager.queueNames().includes(queue),
-      { label: `worker for ${queue}` },
-    );
+    await waitFor(() => system.manager.queueNames().includes(queue), {
+      label: `worker for ${queue}`,
+    });
     await waitForJob(system.jobService, queue, created.id, "completed");
   });
 

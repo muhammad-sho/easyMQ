@@ -54,7 +54,7 @@ function inCidr(ip: string, cidr: string): boolean {
   const bits = Number(bitsStr);
   if (isIP(ip) !== 4 || !base || !Number.isFinite(bits)) return false;
   if (bits === 0) return true;
-  const mask = bits === 32 ? 0xffffffff : (~((1 << (32 - bits)) - 1) >>> 0);
+  const mask = bits === 32 ? 0xffffffff : ~((1 << (32 - bits)) - 1) >>> 0;
   return (ipv4ToInt(ip) & mask) === (ipv4ToInt(base) & mask);
 }
 
@@ -98,7 +98,7 @@ function ipv6InCidr(ip: string, cidr: string): boolean {
   if (addr === null || baseAddr === null || !Number.isFinite(bits)) return false;
   if (bits === 0) return true;
   const shift = 128n - BigInt(bits);
-  return (addr >> shift) === (baseAddr >> shift);
+  return addr >> shift === baseAddr >> shift;
 }
 
 /** IPv4-mapped IPv6 (::ffff:a.b.c.d) unwraps to its IPv4 address. */
@@ -278,16 +278,16 @@ export class HttpExecutor implements Executor {
   async execute(ctx: JobExecutionContext): Promise<ExecutionResult> {
     const started = Date.now();
     const execution = ctx.execution;
-    if (execution.type !== "http") {
+    const executionType = (execution as unknown as { type?: unknown }).type;
+    if (executionType !== "http") {
       throw new ExecutorError(
         "EXECUTOR_ERROR",
-        `HttpExecutor cannot handle execution type '${(execution as { type: string }).type}'.`,
+        `HttpExecutor cannot handle execution type '${String(executionType)}'.`,
       );
     }
-    const http = execution as HttpExecution;
+    const http = execution;
     const timeoutMs = http.timeoutMs ?? this.options.timeoutMs;
-    const allowPrivate =
-      http.allowPrivateNetwork ?? this.options.allowPrivateNetwork;
+    const allowPrivate = http.allowPrivateNetwork ?? this.options.allowPrivateNetwork;
 
     let url: URL;
     try {
@@ -306,8 +306,7 @@ export class HttpExecutor implements Executor {
     const headers = this.buildHeaders(http.headers);
     const body = ["GET", "HEAD"].includes(method) ? undefined : bodyToString(http.body);
     if (body !== undefined && !hasContentType(headers)) {
-      headers["content-type"] =
-        typeof http.body === "string" ? "text/plain" : "application/json";
+      headers["content-type"] = typeof http.body === "string" ? "text/plain" : "application/json";
     }
 
     const timeoutController = new AbortController();
@@ -353,10 +352,7 @@ export class HttpExecutor implements Executor {
     for (const [name, value] of Object.entries(input ?? {})) {
       const lower = name.toLowerCase();
       if (HOP_BY_HOP.has(lower)) {
-        throw new ExecutorError(
-          "EXECUTOR_ERROR",
-          `Hop-by-hop header '${name}' must not be set.`,
-        );
+        throw new ExecutorError("EXECUTOR_ERROR", `Hop-by-hop header '${name}' must not be set.`);
       }
       headers[lower] = value;
     }
@@ -373,8 +369,8 @@ export class HttpExecutor implements Executor {
     queue: string;
     jobId: string;
   }): Promise<Omit<ExecutionResult, "durationMs">> {
-    let { url, method, headers, body } = args;
-    const { signal, allowPrivate, queue, jobId } = args;
+    let { url, method, body } = args;
+    const { headers, signal, allowPrivate, queue, jobId } = args;
 
     for (let redirect = 0; redirect <= this.options.maxRedirects; redirect++) {
       await assertSafeTarget(url.hostname, allowPrivate);
@@ -383,8 +379,7 @@ export class HttpExecutor implements Executor {
         "Outbound HTTP request",
       );
 
-      let response: Response;
-      response = await fetch(url, {
+      const response: Response = await fetch(url, {
         method,
         headers,
         ...(body !== undefined ? { body } : {}),
@@ -422,10 +417,7 @@ export class HttpExecutor implements Executor {
         if (response.status === 303 && method !== "HEAD") {
           method = "GET";
           body = undefined;
-        } else if (
-          (response.status === 301 || response.status === 302) &&
-          method === "POST"
-        ) {
+        } else if ((response.status === 301 || response.status === 302) && method === "POST") {
           method = "GET";
           body = undefined;
         }
@@ -480,7 +472,7 @@ async function readBodyWithLimit(
     }
     return { text, truncated: false };
   }
-  const reader = response.body.getReader();
+  const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {

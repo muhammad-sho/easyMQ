@@ -1,4 +1,4 @@
-import type { JobSchedulerJson } from "bullmq";
+import type { JobSchedulerJson, RepeatOptions } from "bullmq";
 import { ApiError } from "../api/errors.js";
 import type { AppConfig } from "../config/schema.js";
 import type { QueueFactory } from "../infrastructure/bullmq/queue-factory.js";
@@ -18,10 +18,7 @@ export interface SchedulePage {
   nextOffset: number | null;
 }
 
-function toEasyMQSchedule(
-  queueName: string,
-  scheduler: JobSchedulerJson,
-): EasyMQSchedule {
+function toEasyMQSchedule(queueName: string, scheduler: JobSchedulerJson): EasyMQSchedule {
   return {
     id: scheduler.id ?? scheduler.key,
     queue: queueName,
@@ -71,9 +68,7 @@ export class ScheduleService {
     const hasPattern = opts.pattern !== undefined;
     const hasEvery = opts.everyMs !== undefined;
     if (hasPattern === hasEvery) {
-      throw ApiError.validation(
-        "Exactly one of pattern (cron) or everyMs (interval) must be set.",
-      );
+      throw ApiError.validation("Exactly one of pattern (cron) or everyMs (interval) must be set.");
     }
     if (hasEvery && (!Number.isFinite(opts.everyMs) || (opts.everyMs as number) <= 0)) {
       throw ApiError.validation("everyMs must be a positive number of milliseconds.");
@@ -99,9 +94,7 @@ export class ScheduleService {
         ...(opts.attempts !== undefined ? { attempts: opts.attempts } : {}),
         ...(opts.backoff !== undefined ? { backoff: opts.backoff } : {}),
         ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
-        ...(opts.removeOnComplete !== undefined
-          ? { removeOnComplete: opts.removeOnComplete }
-          : {}),
+        ...(opts.removeOnComplete !== undefined ? { removeOnComplete: opts.removeOnComplete } : {}),
         ...(opts.removeOnFail !== undefined ? { removeOnFail: opts.removeOnFail } : {}),
       },
       {
@@ -112,27 +105,27 @@ export class ScheduleService {
         removeOnFailCount: this.config.defaultRemoveOnFailCount,
       },
     );
-    const { jobId: _jobId, delay: _delay, deduplication: _dedup, ...templateOpts } =
-      templateJobOptions;
+    const {
+      jobId: _jobId,
+      delay: _delay,
+      deduplication: _dedup,
+      ...templateOpts
+    } = templateJobOptions;
 
     const queue = this.queues.getQueue(opts.queue);
+    const repeatOpts: Omit<RepeatOptions, "key"> = {};
+    if (opts.pattern !== undefined) repeatOpts.pattern = opts.pattern;
+    if (opts.everyMs !== undefined) repeatOpts.every = opts.everyMs;
+    if (opts.timezone !== undefined) repeatOpts.tz = opts.timezone;
+    if (opts.startDateMs !== undefined) repeatOpts.startDate = opts.startDateMs;
+    if (opts.endDateMs !== undefined) repeatOpts.endDate = opts.endDateMs;
+    if (opts.limit !== undefined) repeatOpts.limit = opts.limit;
     try {
-      await queue.upsertJobScheduler(
-        opts.id,
-        {
-          ...(hasPattern ? { pattern: opts.pattern as string } : {}),
-          ...(hasEvery ? { every: opts.everyMs as number } : {}),
-          ...(opts.timezone !== undefined ? { tz: opts.timezone } : {}),
-          ...(opts.startDateMs !== undefined ? { startDate: opts.startDateMs } : {}),
-          ...(opts.endDateMs !== undefined ? { endDate: opts.endDateMs } : {}),
-          ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
-        },
-        {
-          name: opts.name ?? opts.id,
-          data,
-          opts: templateOpts,
-        },
-      );
+      await queue.upsertJobScheduler(opts.id, repeatOpts, {
+        name: opts.name ?? opts.id,
+        data,
+        opts: templateOpts,
+      });
     } catch (err) {
       throw ApiError.validation(
         `Invalid schedule: ${err instanceof Error ? err.message : String(err)}`,
@@ -148,14 +141,10 @@ export class ScheduleService {
     await this.ensureRegistered(queueName);
     const scheduler = await this.queues.getQueue(queueName).getJobScheduler(id);
     if (!scheduler) throw ApiError.notFound("schedule", id, queueName);
-    return toEasyMQSchedule(queueName, scheduler as JobSchedulerJson);
+    return toEasyMQSchedule(queueName, scheduler);
   }
 
-  async listSchedules(
-    queueName: string,
-    offset = 0,
-    limit?: number,
-  ): Promise<SchedulePage> {
+  async listSchedules(queueName: string, offset = 0, limit?: number): Promise<SchedulePage> {
     assertValidQueueName(queueName);
     await this.ensureRegistered(queueName);
     const pageLimit = Math.min(
@@ -168,9 +157,7 @@ export class ScheduleService {
       queue.getJobSchedulers(start, start + pageLimit - 1, true),
       queue.getJobSchedulersCount(),
     ]);
-    const schedules = schedulers.map((s) =>
-      toEasyMQSchedule(queueName, s as JobSchedulerJson),
-    );
+    const schedules = schedulers.map((s) => toEasyMQSchedule(queueName, s));
     void total;
     return {
       schedules,
