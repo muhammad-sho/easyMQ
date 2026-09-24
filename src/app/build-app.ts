@@ -1,5 +1,6 @@
 import type { AppInstance } from "../api/server.js";
 import { buildApp, type ApiServices } from "../api/server.js";
+import { resolveApiAuth } from "../config/api-token.js";
 import type { AppConfig } from "../config/schema.js";
 import { HttpExecutor } from "../executors/http-executor.js";
 import { HealthService } from "../health/health-service.js";
@@ -30,16 +31,20 @@ export interface BuiltSystem {
  * API role creates no BullMQ Workers and no subscriptions;
  * worker role creates no HTTP server.
  */
-export async function buildSystem(config: AppConfig): Promise<BuiltSystem> {
+export async function buildSystem(input: AppConfig): Promise<BuiltSystem> {
   const logger = createLogger({
-    level: config.logLevel,
-    role: config.appRole,
-    pretty: config.logPretty,
+    level: input.logLevel,
+    role: input.appRole,
+    pretty: input.logPretty,
   });
-  const connections = new RedisConnectionManager(config.redisUrl, logger);
+  const connections = new RedisConnectionManager(input.redisUrl, logger);
   const shared = connections.getShared();
+  let config = input;
   try {
     await connections.waitUntilReady();
+    // Zero-config deployments omit API_TOKEN; resolve a secure per-deployment
+    // token (env override > Redis-persisted > generate once) before wiring auth.
+    config = (await resolveApiAuth(config, shared, logger)).config;
   } catch (err) {
     // ioredis otherwise keeps retry timers alive after a failed startup.
     connections.disconnectAll();

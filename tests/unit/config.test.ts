@@ -44,12 +44,14 @@ describe("loadConfig", () => {
     expect(config.defaultBackoffType).toBe("fixed");
   });
 
-  it("requires API_TOKEN when serving the API without AUTH_DISABLED", () => {
-    expect(() => loadConfig({})).toThrow(/API_TOKEN/);
-    expect(() => loadConfig({ APP_ROLE: "api" })).toThrow(/API_TOKEN/);
-    // Worker-only role does not serve the API, so no token is needed.
+  it("allows API role without API_TOKEN (resolved at startup)", () => {
+    // Zero-config: loadConfig does not require a token; buildSystem resolves
+    // a deployment-scoped token from Redis before serving the API.
+    expect(loadConfig({}).apiToken).toBeUndefined();
+    expect(loadConfig({ APP_ROLE: "api" }).apiToken).toBeUndefined();
     expect(loadConfig({ APP_ROLE: "worker" }).apiToken).toBeUndefined();
     expect(loadConfig({ API_TOKEN: "secret" }).apiToken).toBe("secret");
+    expect(loadConfig({ API_TOKEN: "" }).apiToken).toBeUndefined();
   });
 
   it("rejects invalid numbers, booleans and enums with clear errors", () => {

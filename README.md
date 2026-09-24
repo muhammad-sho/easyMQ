@@ -24,7 +24,7 @@ webhooks-as-a-concept, no database assumptions. A job is an arbitrary JSON
 - Separate `api` / `worker` roles (scale independently) or single-container
   `both` mode
 - Structured JSON logging, liveness / readiness probes, graceful shutdown
-- Docker image + Compose deployment with persistent Redis
+- Zero-config Docker Compose deployment with persistent Redis and GHCR images
 
 ## Architecture
 
@@ -59,20 +59,47 @@ webhooks-as-a-concept, no database assumptions. A job is an arbitrary JSON
 
 ## Quick start
 
+### Docker (recommended)
+
+Zero configuration — no `.env`, no secrets file, no local build:
+
+```bash
+git clone https://github.com/muhammad-sho/easyMQ.git
+cd easyMQ
+docker compose up -d
+```
+
+```bash
+docker compose ps
+docker compose logs -f easymq
+```
+
+Health endpoints (unauthenticated):
+
+```bash
+curl http://localhost:3000/health/live
+curl http://localhost:3000/health/ready
+```
+
+On first start easyMQ generates a random API token and prints it in the
+`easymq` logs (stable for the life of the Redis volume). Use it for API calls:
+
+```bash
+TOKEN=$(docker compose logs easymq | sed -n 's/.*API token: \([^ ]*\).*/\1/p' | tail -1)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/queues
+```
+
+`.env` is **optional**. Application defaults are production-safe; Compose only
+sets `REDIS_URL` for the container network. See
+[Configuration](#configuration) to override defaults.
+
+### Node.js (local development)
+
 Requirements: Node.js 20+, Redis 7+.
 
 ```bash
 npm install
-cp .env.example .env        # set API_TOKEN (or AUTH_DISABLED=true for dev)
-npm run dev                 # APP_ROLE=both by default
-```
-
-With Docker (app + persistent Redis, uses the published GHCR image):
-
-```bash
-API_TOKEN=super-secret docker compose pull
-API_TOKEN=super-secret docker compose up -d
-curl http://localhost:3000/health/live
+npm run dev                 # APP_ROLE=both; set API_TOKEN or AUTH_DISABLED=true as needed
 ```
 
 Create and run a job (dev, auth disabled):
@@ -89,51 +116,106 @@ curl -s -X POST localhost:3000/jobs \
 
 Published image: **`ghcr.io/muhammad-sho/easymq`**.
 
-Every push to `main` automatically builds the image from `Dockerfile` and
-publishes `ghcr.io/muhammad-sho/easymq:latest` plus an immutable
-`ghcr.io/muhammad-sho/easymq:sha-<short-sha>` tag for that commit (GitHub
-Actions + `GITHUB_TOKEN`; no manual registry token). Pull requests never
-publish `latest`.
+Every push to `main` builds the image from `Dockerfile` and publishes
+`ghcr.io/muhammad-sho/easymq:latest` plus immutable
+`ghcr.io/muhammad-sho/easymq:sha-<short-sha>` tags (GitHub Actions +
+`GITHUB_TOKEN`; PRs never publish `latest`).
 
-Normal deployment pulls the published image — no local build required:
+Normal deployment:
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-- `docker-compose.yml` runs `easymq` (role `both`) + Redis with a persistent
-  `redis-data` volume and health checks. Redis is **not** published to the
-  host by default.
-- Override the image with `EASYMQ_IMAGE` (e.g. pin
-  `EASYMQ_IMAGE=ghcr.io/muhammad-sho/easymq:sha-abc1234`).
-- Scale out with dedicated roles (see the commented `easymq-api` /
-  `easymq-worker` services in `docker-compose.yml`), or point
-  `REDIS_URL` at an externally managed Redis and drop the bundled service.
-- Local image build (optional; still useful for development):
+`docker-compose.yml` is a minimal production deployment: easyMQ (`APP_ROLE=both`)
++ persistent Redis, health checks, port 3000. Redis is not published to the host.
+If the GHCR package is private for your account, `docker login ghcr.io` first.
 
-  ```bash
-  docker build -t ghcr.io/muhammad-sho/easymq:local .
-  EASYMQ_IMAGE=ghcr.io/muhammad-sho/easymq:local docker compose up -d
-  ```
+### Custom image / SHA pinning
 
-## External Redis configuration
+```bash
+EASYMQ_IMAGE=ghcr.io/muhammad-sho/easymq:sha-abc1234 docker compose up -d
+```
 
-Set `REDIS_URL` (e.g. `redis://user:password@host:6379/0`). easyMQ requires
-`maxRetriesPerRequest: null` semantics for BullMQ blocking connections and
-configures that itself. Use Redis persistence (AOF/RDB) — BullMQ state,
-including scheduled jobs, lives in Redis.
+Or set `EASYMQ_IMAGE` in a shell profile / `.env` (Compose reads `.env` only
+for interpolation — still not required for defaults).
 
-## Environment variables
+### External Redis (advanced)
 
-See `.env.example` for the full list. Highlights:
+Drop the `redis` service from Compose (or ignore it) and point easyMQ at your
+instance:
+
+```bash
+REDIS_URL=redis://user:password@redis.example.com:6379/0 docker compose up -d
+```
+
+Or add `REDIS_URL` under `easymq.environment` in a Compose override file.
+easyMQ configures BullMQ’s `maxRetriesPerRequest: null` semantics itself.
+Enable Redis persistence (AOF/RDB) — queue state lives in Redis.
+
+### Dedicated API / worker roles (advanced)
+
+Scale HTTP and workers separately with the same image. Example override
+(`compose.override.yml`):
+
+```yaml
+services:
+  easymq:
+    profiles: ["full"]
+  easymq-api:
+    image: ${EASYMQ_IMAGE:-ghcr.io/muhammad-sho/easymq:latest}
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+      APP_ROLE: api
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+  easymq-worker:
+    image: ${EASYMQ_IMAGE:-ghcr.io/muhammad-sho/easymq:latest}
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+      APP_ROLE: worker
+      WORKER_CONCURRENCY: 20
+    restart: unless-stopped
+```
+
+API instances create no BullMQ Workers; worker instances never listen for HTTP.
+
+### Local image build (advanced)
+
+```bash
+docker build -t ghcr.io/muhammad-sho/easymq:local .
+EASYMQ_IMAGE=ghcr.io/muhammad-sho/easymq:local docker compose up -d
+```
+
+## Configuration
+
+`.env` is **never required** for Docker or local operation. Hierarchy:
+
+1. Application defaults (safe for production)
+2. Environment variables / optional `.env` override those defaults
+3. Compose supplies only what differs in Docker (e.g. `REDIS_URL=redis://redis:6379`)
+
+`.env.example` is an optional reference for every setting. The normal user
+does not need it.
+
+### Environment variables
+
+Highlights (full list in `.env.example`):
 
 | Variable                                                                 | Default                      | Purpose                                                                 |
 | ------------------------------------------------------------------------ | ---------------------------- | ----------------------------------------------------------------------- |
 | `REDIS_URL`                                                              | `redis://127.0.0.1:6379`     | Redis connection                                                        |
 | `REDIS_KEY_PREFIX`                                                       | `easymq`                     | Key prefix for BullMQ + easyMQ keys                                     |
 | `API_HOST` / `API_PORT`                                                  | `0.0.0.0` / `3000`           | HTTP listen address                                                     |
-| `API_TOKEN`                                                              | —                            | Bearer token (required unless `AUTH_DISABLED=true`)                     |
+| `API_TOKEN`                                                              | —                            | Optional bearer pin; if unset, a random token is generated and stored in Redis |
 | `AUTH_DISABLED`                                                          | `false`                      | Dev-only auth bypass — never in production                              |
 | `APP_ROLE`                                                               | `both`                       | `api` \| `worker` \| `both`                                             |
 | `WORKER_CONCURRENCY`                                                     | `10`                         | Jobs per queue per worker instance                                      |
@@ -151,9 +233,15 @@ See `.env.example` for the full list. Highlights:
 ## Authentication
 
 All routes except `GET /health/live` and `GET /health/ready` require
-`Authorization: Bearer <API_TOKEN>` (compared in constant time). Tokens come
-from the environment, are never logged, and 401 responses contain no secrets.
-`AUTH_DISABLED=true` is an explicit development-only bypass.
+`Authorization: Bearer <API_TOKEN>` (constant-time compare).
+
+There is **no default/shared secret**. When `API_TOKEN` is unset and the API
+is served, startup generates a cryptographically random token and persists it
+in Redis (`<REDIS_KEY_PREFIX>:auth:api-token`) so restarts keep the same token
+while the Redis volume lives. The token is printed in startup logs. Set
+`API_TOKEN` to pin a value (multi-instance deployments, secret managers).
+`AUTH_DISABLED=true` is an explicit development-only bypass — never in
+production.
 
 ## API
 
@@ -409,7 +497,8 @@ Redis data loss. easyMQ adds only the queue-name set, cancellation markers
 
 ### Production deployment
 
-1. Set a strong `API_TOKEN` (never `AUTH_DISABLED=true`).
+1. Prefer the managed token from logs or set a strong `API_TOKEN` (never
+   `AUTH_DISABLED=true`).
 2. Run dedicated `api` (×N) and `worker` (×M) deployments behind your
    load balancer; keep Redis private with persistence enabled.
 3. Tune `WORKER_CONCURRENCY`, executor limits, `SHUTDOWN_TIMEOUT_MS`, and

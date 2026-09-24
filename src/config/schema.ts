@@ -21,6 +21,10 @@ export type DefaultBackoffType = z.infer<typeof backoffTypeSchema>;
  * Fully-resolved, validated application configuration.
  * All values have concrete types here — environment parsing
  * (strings -> numbers/booleans) happens in `env.ts` before validation.
+ *
+ * `apiToken` may be omitted at load time when serving the API: startup
+ * resolves a deployment-scoped token from Redis (`resolveApiAuth`) unless
+ * `API_TOKEN` is set or `AUTH_DISABLED=true`. No known default secret exists.
  */
 export const configSchema = z
   .object({
@@ -49,15 +53,6 @@ export const configSchema = z
     pageMaxLimit: z.number().int().min(1).max(1000),
   })
   .superRefine((cfg, ctx) => {
-    const servesApi = cfg.appRole === "api" || cfg.appRole === "both";
-    if (servesApi && !cfg.authDisabled && !cfg.apiToken) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["apiToken"],
-        message:
-          "API_TOKEN is required when serving the API. Set API_TOKEN or explicitly set AUTH_DISABLED=true for local development only.",
-      });
-    }
     if (cfg.pageDefaultLimit > cfg.pageMaxLimit) {
       ctx.addIssue({
         code: "custom",
