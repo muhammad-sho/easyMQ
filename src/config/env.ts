@@ -1,0 +1,142 @@
+import { z } from "zod";
+import { configSchema, type AppConfig } from "./schema.js";
+
+function parseBooleanString(
+  value: string | undefined,
+  defaultValue: boolean,
+): boolean {
+  if (value === undefined || value.trim() === "") return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  throw new Error(
+    `Invalid boolean value ${JSON.stringify(value)} (expected true/false).`,
+  );
+}
+
+function parseNumberString(
+  value: string | undefined,
+  defaultValue: number,
+  name: string,
+): number {
+  if (value === undefined || value.trim() === "") return defaultValue;
+  const parsed = Number(value.trim());
+  if (!Number.isFinite(parsed)) {
+    throw new Error(
+      `Invalid number value ${JSON.stringify(value)} for ${name}.`,
+    );
+  }
+  return parsed;
+}
+
+function parseOptionalString(value: string | undefined): string | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  return value;
+}
+
+/**
+ * Load and validate configuration from environment variables.
+ * Throws a descriptive Error when validation fails so the process
+ * can fail fast at startup.
+ */
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  let raw: Record<string, unknown>;
+  try {
+    raw = {
+      redisUrl: env["REDIS_URL"]?.trim() || "redis://127.0.0.1:6379",
+      redisKeyPrefix: env["REDIS_KEY_PREFIX"]?.trim() || "easymq",
+      apiHost: env["API_HOST"]?.trim() || "0.0.0.0",
+      apiPort: parseNumberString(env["API_PORT"], 3000, "API_PORT"),
+      apiToken: parseOptionalString(env["API_TOKEN"]),
+      authDisabled: parseBooleanString(env["AUTH_DISABLED"], false),
+      appRole: env["APP_ROLE"]?.trim() || "both",
+      workerConcurrency: parseNumberString(
+        env["WORKER_CONCURRENCY"],
+        10,
+        "WORKER_CONCURRENCY",
+      ),
+      httpTimeoutMs: parseNumberString(
+        env["HTTP_TIMEOUT_MS"],
+        30_000,
+        "HTTP_TIMEOUT_MS",
+      ),
+      httpMaxResponseBytes: parseNumberString(
+        env["HTTP_MAX_RESPONSE_BYTES"],
+        1_048_576,
+        "HTTP_MAX_RESPONSE_BYTES",
+      ),
+      httpMaxRedirects: parseNumberString(
+        env["HTTP_MAX_REDIRECTS"],
+        5,
+        "HTTP_MAX_REDIRECTS",
+      ),
+      httpAllowPrivateNetwork: parseBooleanString(
+        env["HTTP_ALLOW_PRIVATE_NETWORK"],
+        false,
+      ),
+      cancellationTtlSeconds: parseNumberString(
+        env["CANCELLATION_TTL_SECONDS"],
+        300,
+        "CANCELLATION_TTL_SECONDS",
+      ),
+      shutdownTimeoutMs: parseNumberString(
+        env["SHUTDOWN_TIMEOUT_MS"],
+        30_000,
+        "SHUTDOWN_TIMEOUT_MS",
+      ),
+      logLevel: env["LOG_LEVEL"]?.trim() || "info",
+      logPretty: parseBooleanString(env["LOG_PRETTY"], false),
+      defaultAttempts: parseNumberString(
+        env["DEFAULT_ATTEMPTS"],
+        3,
+        "DEFAULT_ATTEMPTS",
+      ),
+      defaultBackoffType:
+        env["DEFAULT_BACKOFF_TYPE"]?.trim() || "exponential",
+      defaultBackoffDelayMs: parseNumberString(
+        env["DEFAULT_BACKOFF_DELAY_MS"],
+        5000,
+        "DEFAULT_BACKOFF_DELAY_MS",
+      ),
+      defaultRemoveOnCompleteCount: parseNumberString(
+        env["DEFAULT_REMOVE_ON_COMPLETE_COUNT"],
+        1000,
+        "DEFAULT_REMOVE_ON_COMPLETE_COUNT",
+      ),
+      defaultRemoveOnFailCount: parseNumberString(
+        env["DEFAULT_REMOVE_ON_FAIL_COUNT"],
+        5000,
+        "DEFAULT_REMOVE_ON_FAIL_COUNT",
+      ),
+      pageDefaultLimit: parseNumberString(
+        env["PAGE_DEFAULT_LIMIT"],
+        50,
+        "PAGE_DEFAULT_LIMIT",
+      ),
+      pageMaxLimit: parseNumberString(
+        env["PAGE_MAX_LIMIT"],
+        200,
+        "PAGE_MAX_LIMIT",
+      ),
+    };
+  } catch (err) {
+    throw new Error(
+      `Invalid configuration: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const result = configSchema.safeParse(raw);
+  if (!result.success) {
+    const details = result.error.issues
+      .map((issue) => {
+        const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+        return `  - ${path}: ${issue.message}`;
+      })
+      .join("\n");
+    throw new Error(`Invalid configuration:\n${details}`);
+  }
+  return result.data;
+}
+
+export { z };
+export type { AppConfig };
