@@ -15,7 +15,9 @@ services:
     #   - "127.0.0.1:6379:6379"
 
   easymq:
-    build: .
+    # Published image (auto-updated on every push to main). Override with
+    # EASYMQ_IMAGE to pin a sha-<short-sha> tag or use a local build.
+    image: ${EASYMQ_IMAGE:-ghcr.io/muhammad-sho/easymq:latest}
     depends_on:
       redis:
         condition: service_healthy
@@ -45,7 +47,7 @@ services:
 
   # Example split deployment (uncomment to run dedicated roles):
   # easymq-api:
-  #   build: .
+  #   image: ${EASYMQ_IMAGE:-ghcr.io/muhammad-sho/easymq:latest}
   #   depends_on:
   #     redis:
   #       condition: service_healthy
@@ -58,7 +60,7 @@ services:
   #   restart: unless-stopped
   #
   # easymq-worker:
-  #   build: .
+  #   image: ${EASYMQ_IMAGE:-ghcr.io/muhammad-sho/easymq:latest}
   #   depends_on:
   #     redis:
   #       condition: service_healthy
@@ -71,6 +73,10 @@ services:
   # To use an externally managed Redis instead of the bundled one, remove
   # the `redis` service and set REDIS_URL to your instance, e.g.:
   #   REDIS_URL: redis://user:password@redis.example.com:6379/0
+
+  # To build and run a local image instead of the published one:
+  #   docker build -t ghcr.io/muhammad-sho/easymq:local .
+  #   EASYMQ_IMAGE=ghcr.io/muhammad-sho/easymq:local docker compose up -d
 
 volumes:
   redis-data:

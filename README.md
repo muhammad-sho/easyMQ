@@ -67,10 +67,11 @@ cp .env.example .env        # set API_TOKEN (or AUTH_DISABLED=true for dev)
 npm run dev                 # APP_ROLE=both by default
 ```
 
-With Docker (app + persistent Redis):
+With Docker (app + persistent Redis, uses the published GHCR image):
 
 ```bash
-API_TOKEN=super-secret docker compose up --build
+API_TOKEN=super-secret docker compose pull
+API_TOKEN=super-secret docker compose up -d
 curl http://localhost:3000/health/live
 ```
 
@@ -86,12 +87,35 @@ curl -s -X POST localhost:3000/jobs \
 
 ## Docker deployment
 
+Published image: **`ghcr.io/muhammad-sho/easymq`**.
+
+Every push to `main` automatically builds the image from `Dockerfile` and
+publishes `ghcr.io/muhammad-sho/easymq:latest` plus an immutable
+`ghcr.io/muhammad-sho/easymq:sha-<short-sha>` tag for that commit (GitHub
+Actions + `GITHUB_TOKEN`; no manual registry token). Pull requests never
+publish `latest`.
+
+Normal deployment pulls the published image — no local build required:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
 - `docker-compose.yml` runs `easymq` (role `both`) + Redis with a persistent
   `redis-data` volume and health checks. Redis is **not** published to the
   host by default.
+- Override the image with `EASYMQ_IMAGE` (e.g. pin
+  `EASYMQ_IMAGE=ghcr.io/muhammad-sho/easymq:sha-abc1234`).
 - Scale out with dedicated roles (see the commented `easymq-api` /
   `easymq-worker` services in `docker-compose.yml`), or point
   `REDIS_URL` at an externally managed Redis and drop the bundled service.
+- Local image build (optional; still useful for development):
+
+  ```bash
+  docker build -t ghcr.io/muhammad-sho/easymq:local .
+  EASYMQ_IMAGE=ghcr.io/muhammad-sho/easymq:local docker compose up -d
+  ```
 
 ## External Redis configuration
 
