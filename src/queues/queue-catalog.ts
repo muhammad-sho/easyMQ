@@ -1,5 +1,6 @@
 import type { Redis } from "ioredis";
 import type { Logger } from "../infrastructure/logging/logger.js";
+import { waitForRedisReady } from "../infrastructure/redis/connection-manager.js";
 import { ApiError } from "../api/errors.js";
 
 function assertValidQueueName(name: string): void {
@@ -65,8 +66,10 @@ export class QueueCatalog {
     if (!results) {
       throw ApiError.serviceUnavailable("Queue registration failed (no Redis response).");
     }
+    // NOTE: do NOT add to `known` here. That set is subscriber-side dedup;
+    // marking it on the registering side would swallow the very
+    // notification local workers rely on (same-process api+worker role).
     const added = results[0]?.[1] as number;
-    this.known.add(queueName);
     return added === 1;
   }
 
@@ -92,6 +95,7 @@ export class QueueCatalog {
     if (this.started) return;
     const subscriber = this.createSubscriber();
     this.subscriber = subscriber;
+    await waitForRedisReady(subscriber, 15_000);
     this.onMessage = (_channel: string, message: string) => {
       this.emit(message);
     };

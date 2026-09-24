@@ -1,4 +1,5 @@
 import type { Redis } from "ioredis";
+import { waitForRedisReady } from "../infrastructure/redis/connection-manager.js";
 import { ApiError } from "../api/errors.js";
 import type { Logger } from "../infrastructure/logging/logger.js";
 import type { QueueFactory } from "../infrastructure/bullmq/queue-factory.js";
@@ -130,6 +131,7 @@ export class CancellationCoordinator {
     onSignal: (queue: string, jobId: string) => void,
   ): Promise<() => Promise<void>> {
     const subscriber = this.createSubscriber();
+    await waitForRedisReady(subscriber, 15_000);
     const handler = (_channel: string, message: string): void => {
       try {
         const parsed = JSON.parse(message) as { queue?: unknown; jobId?: unknown };

@@ -27,7 +27,7 @@ export const configSchema = z
     redisUrl: z.string().min(1),
     redisKeyPrefix: z.string().min(1),
     apiHost: z.string().min(1),
-    apiPort: z.number().int().min(1).max(65535),
+    apiPort: z.number().int().min(0).max(65535),
     apiToken: z.string().min(1).optional(),
     authDisabled: z.boolean(),
     appRole: appRoleSchema,

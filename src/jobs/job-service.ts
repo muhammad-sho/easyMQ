@@ -252,10 +252,25 @@ export class JobService {
     }
 
     const queue = this.queues.getQueue(opts.queue);
-    const jobs = await queue.getJobs(types ?? LISTABLE_STATES, offset, offset + limit - 1, asc);
-    const mapped = await Promise.all(
-      jobs.map((job) => toEasyMQJob(job)),
-    );
+    // BullMQ merges per-type ranges when several types are requested, so
+    // paginate per type and slice globally for an exact limit/offset page.
+    // Ordering: jobs are concatenated in the requested state order, each in
+    // BullMQ index order (asc parameter). Documented in the README.
+    const window = offset + limit;
+    const seen = new Set<string>();
+    const merged: Job[] = [];
+    for (const type of types ?? LISTABLE_STATES) {
+      const batch = await queue.getJobs([type], 0, window - 1, asc);
+      for (const job of batch) {
+        if (job.id !== undefined && !seen.has(job.id)) {
+          seen.add(job.id);
+          merged.push(job);
+        }
+      }
+      if (merged.length >= window) break;
+    }
+    const page = merged.slice(offset, offset + limit);
+    const mapped = await Promise.all(page.map((job) => toEasyMQJob(job)));
     return {
       jobs: mapped,
       offset,

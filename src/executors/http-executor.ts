@@ -117,9 +117,7 @@ function unwrapIp(ip: string): { family: 4 | 6; normalized: string } {
 }
 
 const IPV4_ALWAYS_BLOCKED: Array<{ cidr: string; reason: string }> = [
-  { cidr: "127.0.0.0/8", reason: "loopback" },
   { cidr: "0.0.0.0/8", reason: "unspecified" },
-  { cidr: "169.254.0.0/16", reason: "link-local (includes cloud metadata services)" },
   { cidr: "224.0.0.0/4", reason: "multicast" },
   { cidr: "240.0.0.0/4", reason: "reserved" },
   { cidr: "100.64.0.0/10", reason: "carrier-grade NAT" },
@@ -129,19 +127,35 @@ const IPV4_ALWAYS_BLOCKED: Array<{ cidr: string; reason: string }> = [
   { cidr: "192.18.0.0/15", reason: "benchmark/reserved" },
 ];
 
-const IPV4_PRIVATE: Array<{ cidr: string; reason: string }> = [
+const IPV4_PRIVATE_ONLY: Array<{ cidr: string; reason: string }> = [
+  { cidr: "127.0.0.0/8", reason: "loopback" },
+  { cidr: "169.254.0.0/16", reason: "link-local (includes cloud metadata services)" },
   { cidr: "10.0.0.0/8", reason: "private network" },
   { cidr: "172.16.0.0/12", reason: "private network" },
   { cidr: "192.168.0.0/16", reason: "private network" },
 ];
 
 const IPV6_ALWAYS_BLOCKED: Array<{ cidr: string; reason: string }> = [
-  { cidr: "::1/128", reason: "loopback" },
   { cidr: "::/128", reason: "unspecified" },
-  { cidr: "fe80::/10", reason: "link-local" },
   { cidr: "ff00::/8", reason: "multicast" },
   { cidr: "2001:db8::/32", reason: "documentation/reserved" },
 ];
+
+const IPV6_PRIVATE_ONLY: Array<{ cidr: string; reason: string }> = [
+  { cidr: "::1/128", reason: "loopback" },
+  { cidr: "fe80::/10", reason: "link-local" },
+  { cidr: "fc00::/7", reason: "private network" },
+];
+
+/**
+ * Cloud metadata-service IPs. Blocked unconditionally — even when private
+ * network access is enabled — since they hand out instance credentials.
+ */
+const METADATA_IPS = new Set([
+  "169.254.169.254", // AWS/GCP/Azure/OCI link-local metadata
+  "100.100.100.100", // Alibaba Cloud metadata
+  "fd00:ec2::254", // AWS IPv6 metadata
+]);
 
 /**
  * SSRF guard: resolve the hostname and reject unsafe destinations.
@@ -165,6 +179,12 @@ export async function assertSafeTarget(
   }
   for (const addr of addresses) {
     const { family, normalized } = unwrapIp(addr.address);
+    if (METADATA_IPS.has(normalized.toLowerCase())) {
+      throw new ExecutorError(
+        "SSRF_BLOCKED",
+        `Blocked request to cloud metadata-service address '${normalized}'.`,
+      );
+    }
     if (family === 4) {
       for (const { cidr, reason } of IPV4_ALWAYS_BLOCKED) {
         if (inCidr(normalized, cidr)) {
@@ -175,7 +195,7 @@ export async function assertSafeTarget(
         }
       }
       if (!allowPrivateNetwork) {
-        for (const { cidr, reason } of IPV4_PRIVATE) {
+        for (const { cidr, reason } of IPV4_PRIVATE_ONLY) {
           if (inCidr(normalized, cidr)) {
             throw new ExecutorError(
               "SSRF_BLOCKED",
@@ -194,12 +214,16 @@ export async function assertSafeTarget(
           );
         }
       }
-      if (!allowPrivateNetwork && ipv6InCidr(normalized, "fc00::/7")) {
-        throw new ExecutorError(
-          "SSRF_BLOCKED",
-          `Blocked request to private network address '${normalized}'. ` +
-            `Enable HTTP_ALLOW_PRIVATE_NETWORK to call internal services.`,
-        );
+      if (!allowPrivateNetwork) {
+        for (const { cidr, reason } of IPV6_PRIVATE_ONLY) {
+          if (ipv6InCidr(normalized, cidr)) {
+            throw new ExecutorError(
+              "SSRF_BLOCKED",
+              `Blocked request to ${reason} address '${normalized}'. ` +
+                `Enable HTTP_ALLOW_PRIVATE_NETWORK to call internal services.`,
+            );
+          }
+        }
       }
     }
   }
@@ -305,14 +329,14 @@ export class HttpExecutor implements Executor {
       });
       return { ...result, durationMs: Date.now() - started };
     } catch (err) {
-      if (err instanceof ExecutionAbortedError) throw err;
-      if (signal.aborted) {
-        if (ctx.signal.aborted) throw new ExecutionAbortedError("Execution aborted.");
+      if (signal.aborted && !ctx.signal.aborted) {
         throw new ExecutorError(
           "EXECUTOR_TIMEOUT",
           `HTTP request timed out after ${String(timeoutMs)}ms.`,
         );
       }
+      if (ctx.signal.aborted) throw new ExecutionAbortedError("Execution aborted.");
+      if (err instanceof ExecutionAbortedError) throw err;
       if (err instanceof ExecutorError) throw err;
       throw new ExecutorError(
         "EXECUTOR_ERROR",
@@ -360,22 +384,13 @@ export class HttpExecutor implements Executor {
       );
 
       let response: Response;
-      try {
-        response = await fetch(url, {
-          method,
-          headers,
-          ...(body !== undefined ? { body } : {}),
-          redirect: "manual",
-          signal,
-        });
-      } catch (err) {
-        if (signal.aborted) throw new ExecutionAbortedError("Execution aborted.");
-        throw new ExecutorError(
-          "EXECUTOR_ERROR",
-          `HTTP request failed: ${err instanceof Error ? err.message : String(err)}`,
-          { cause: err },
-        );
-      }
+      response = await fetch(url, {
+        method,
+        headers,
+        ...(body !== undefined ? { body } : {}),
+        redirect: "manual",
+        signal,
+      });
 
       if (isRedirect(response.status)) {
         if (redirect === this.options.maxRedirects) {

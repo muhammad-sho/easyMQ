@@ -38,6 +38,7 @@ export async function buildSystem(config: AppConfig): Promise<BuiltSystem> {
   });
   const connections = new RedisConnectionManager(config.redisUrl, logger);
   const shared = connections.getShared();
+  await connections.waitUntilReady();
 
   const catalog = new QueueCatalog(
     shared,
