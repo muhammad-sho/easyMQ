@@ -10,6 +10,9 @@ RUN npm run build
 # ---- Runtime stage ----
 FROM node:22-alpine AS runtime
 ENV NODE_ENV=production
+# Docker-aware default: Compose service name on the app network.
+# Override with REDIS_URL for external or non-Compose deployments.
+ENV REDIS_URL=redis://redis:6379
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force

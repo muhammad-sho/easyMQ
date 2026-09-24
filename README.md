@@ -89,8 +89,8 @@ TOKEN=$(docker compose logs easymq | sed -n 's/.*API token: \([^ ]*\).*/\1/p' | 
 curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/queues
 ```
 
-`.env` is **optional**. Application defaults are production-safe; Compose only
-sets `REDIS_URL` for the container network. See
+`.env` is **optional**. Application defaults are production-safe; the image
+defaults `REDIS_URL` to the Compose Redis service. See
 [Configuration](#configuration) to override defaults.
 
 ### Node.js (local development)
@@ -121,78 +121,90 @@ Every push to `main` builds the image from `Dockerfile` and publishes
 `ghcr.io/muhammad-sho/easymq:sha-<short-sha>` tags (GitHub Actions +
 `GITHUB_TOKEN`; PRs never publish `latest`).
 
-Normal deployment:
+### Normal deployment
 
 ```bash
-docker compose pull
 docker compose up -d
 ```
 
-`docker-compose.yml` is a minimal production deployment: easyMQ (`APP_ROLE=both`)
-+ persistent Redis, health checks, port 3000. Redis is not published to the host.
-If the GHCR package is private for your account, `docker login ghcr.io` first.
+No `.env`, no configuration step. Edit `docker-compose.yml` only if you want
+different **deployment** settings (port, container/hostname, storage path).
+Application behavior is not configured in Compose.
 
-### Custom image / SHA pinning
+`docker-compose.yml` contains only deployment settings: image, names,
+restart policy, port 3000, and a host bind mount for Redis under
+`./data/redis`. Redis is not published to the host. If the GHCR package is
+private for your account, `docker login ghcr.io` first.
 
-```bash
-EASYMQ_IMAGE=ghcr.io/muhammad-sho/easymq:sha-abc1234 docker compose up -d
+### Advanced configuration
+
+All advanced settings are **optional** environment variables (`.env` is never
+required). Application built-in defaults apply first; environment variables
+override them. See `.env.example` and [Configuration](#configuration).
+
+#### Image pinning
+
+Edit the `image:` field in `docker-compose.yml` (e.g.
+`ghcr.io/muhammad-sho/easymq:sha-abc1234`).
+
+#### External Redis
+
+Drop the `redis` service and point easyMQ at your instance:
+
+```yaml
+services:
+  easymq:
+    image: ghcr.io/muhammad-sho/easymq:latest
+    container_name: easymq
+    hostname: easymq
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      REDIS_URL: redis://user:password@redis.example.com:6379/0
 ```
 
-Or set `EASYMQ_IMAGE` in a shell profile / `.env` (Compose reads `.env` only
-for interpolation — still not required for defaults).
+Or set `REDIS_URL` in an optional `.env` file. easyMQ configures BullMQ’s
+`maxRetriesPerRequest: null` semantics itself. Enable Redis persistence
+(AOF/RDB) on your instance — queue state lives in Redis.
 
-### External Redis (advanced)
+#### Dedicated API / worker roles
 
-Drop the `redis` service from Compose (or ignore it) and point easyMQ at your
-instance:
-
-```bash
-REDIS_URL=redis://user:password@redis.example.com:6379/0 docker compose up -d
-```
-
-Or add `REDIS_URL` under `easymq.environment` in a Compose override file.
-easyMQ configures BullMQ’s `maxRetriesPerRequest: null` semantics itself.
-Enable Redis persistence (AOF/RDB) — queue state lives in Redis.
-
-### Dedicated API / worker roles (advanced)
-
-Scale HTTP and workers separately with the same image. Example override
-(`compose.override.yml`):
+Scale HTTP and workers separately with the same image (example override
+`compose.override.yml`):
 
 ```yaml
 services:
   easymq:
     profiles: ["full"]
   easymq-api:
-    image: ${EASYMQ_IMAGE:-ghcr.io/muhammad-sho/easymq:latest}
-    depends_on:
-      redis:
-        condition: service_healthy
-    environment:
-      REDIS_URL: redis://redis:6379
-      APP_ROLE: api
+    image: ghcr.io/muhammad-sho/easymq:latest
+    container_name: easymq-api
+    hostname: easymq-api
+    restart: unless-stopped
     ports:
       - "3000:3000"
-    restart: unless-stopped
-  easymq-worker:
-    image: ${EASYMQ_IMAGE:-ghcr.io/muhammad-sho/easymq:latest}
-    depends_on:
-      redis:
-        condition: service_healthy
     environment:
+      APP_ROLE: api
       REDIS_URL: redis://redis:6379
+  easymq-worker:
+    image: ghcr.io/muhammad-sho/easymq:latest
+    container_name: easymq-worker
+    hostname: easymq-worker
+    restart: unless-stopped
+    environment:
       APP_ROLE: worker
       WORKER_CONCURRENCY: 20
-    restart: unless-stopped
+      REDIS_URL: redis://redis:6379
 ```
 
 API instances create no BullMQ Workers; worker instances never listen for HTTP.
 
-### Local image build (advanced)
+#### Local image build
 
 ```bash
 docker build -t ghcr.io/muhammad-sho/easymq:local .
-EASYMQ_IMAGE=ghcr.io/muhammad-sho/easymq:local docker compose up -d
+# Edit image: in docker-compose.yml, or override via Compose file.
 ```
 
 ## Configuration
@@ -200,8 +212,7 @@ EASYMQ_IMAGE=ghcr.io/muhammad-sho/easymq:local docker compose up -d
 `.env` is **never required** for Docker or local operation. Hierarchy:
 
 1. Application defaults (safe for production)
-2. Environment variables / optional `.env` override those defaults
-3. Compose supplies only what differs in Docker (e.g. `REDIS_URL=redis://redis:6379`)
+2. Optional environment variables / `.env` override those defaults
 
 `.env.example` is an optional reference for every setting. The normal user
 does not need it.
@@ -212,7 +223,7 @@ Highlights (full list in `.env.example`):
 
 | Variable                                                                 | Default                      | Purpose                                                                 |
 | ------------------------------------------------------------------------ | ---------------------------- | ----------------------------------------------------------------------- |
-| `REDIS_URL`                                                              | `redis://127.0.0.1:6379`     | Redis connection                                                        |
+| `REDIS_URL`                                                              | `redis://127.0.0.1:6379`     | Redis connection (`redis://redis:6379` in the published image)         |
 | `REDIS_KEY_PREFIX`                                                       | `easymq`                     | Key prefix for BullMQ + easyMQ keys                                     |
 | `API_HOST` / `API_PORT`                                                  | `0.0.0.0` / `3000`           | HTTP listen address                                                     |
 | `API_TOKEN`                                                              | —                            | Optional bearer pin; if unset, a random token is generated and stored in Redis |
@@ -482,10 +493,11 @@ easyMQ guarantees bounded shutdown of everything it owns.
 
 ### Redis persistence
 
-All queue/job/schedule state lives in Redis via BullMQ. Enable Redis
-persistence (the Compose file uses AOF) or jobs and schedules are lost on
-Redis data loss. easyMQ adds only the queue-name set, cancellation markers
-(short TTL), and pub/sub channels.
+All queue/job/schedule state lives in Redis via BullMQ. The Compose file bind-mounts
+`./data/redis` so Redis snapshots persist across container recreation (Redis’s
+default RDB persistence). Enable AOF as well for stricter durability — jobs and
+schedules are lost on Redis data loss. easyMQ adds only the queue-name set,
+cancellation markers (short TTL), and pub/sub channels.
 
 ### Health
 

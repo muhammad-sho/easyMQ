@@ -4,3 +4,6 @@ dist/
 coverage/
 *.log
 .DS_Store
+
+# Compose bind-mount host path (queue/Redis state lives here)
+/data/
