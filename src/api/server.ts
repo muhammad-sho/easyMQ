@@ -58,7 +58,8 @@ function isAuthorized(
  */
 export async function buildApp(services: ApiServices): Promise<AppInstance> {
   const { config, logger } = services;
-  const app = fastify({ loggerInstance: logger });
+  // Ensure server keep-alive sockets cannot outlive a shutdown request.
+  const app = fastify({ loggerInstance: logger, forceCloseConnections: true });
 
   await app.register(helmet);
   await app.register(rateLimit, { max: 1000, timeWindow: "1 minute" });

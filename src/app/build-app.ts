@@ -38,7 +38,13 @@ export async function buildSystem(config: AppConfig): Promise<BuiltSystem> {
   });
   const connections = new RedisConnectionManager(config.redisUrl, logger);
   const shared = connections.getShared();
-  await connections.waitUntilReady();
+  try {
+    await connections.waitUntilReady();
+  } catch (err) {
+    // ioredis otherwise keeps retry timers alive after a failed startup.
+    connections.disconnectAll();
+    throw err;
+  }
 
   const catalog = new QueueCatalog(
     shared,
@@ -76,7 +82,7 @@ export async function buildSystem(config: AppConfig): Promise<BuiltSystem> {
   const queueService = new QueueService(queueFactory, catalog);
   const jobService = new JobService(queueFactory, catalog, config, cancellation);
   const scheduleService = new ScheduleService(queueFactory, catalog, config);
-  const healthService = new HealthService(config.appRole);
+  const healthService = new HealthService(config.appRole, logger);
   healthService.addCheck({
     name: "redis",
     check: () => shared.ping().then(() => undefined),

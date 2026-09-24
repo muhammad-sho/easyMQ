@@ -357,7 +357,12 @@ describe("health API", () => {
     const { app } = await buildTestApp({ readinessFails: true });
     const ready = await app.inject({ method: "GET", url: "/health/ready" });
     expect(ready.statusCode).toBe(503);
-    expect(jsonBody<{ error: { code: string } }>(ready).error.code).toBe("SERVICE_UNAVAILABLE");
+    const body = jsonBody<{
+      error: { code: string; details?: { checks?: Array<{ error?: string }> } };
+    }>(ready);
+    expect(body.error.code).toBe("SERVICE_UNAVAILABLE");
+    expect(JSON.stringify(body)).not.toContain("connection refused");
+    expect(body.error.details?.checks?.[0]?.error).toBe("unavailable");
   });
 });
 

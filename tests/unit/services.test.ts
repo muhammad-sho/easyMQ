@@ -162,6 +162,38 @@ describe("ScheduleService.upsertSchedule ordering", () => {
       upsertJobScheduler.mock.invocationCallOrder[0] as number,
     );
   });
+
+  it("uses UTC for cron schedules without an explicit timezone", async () => {
+    const register = vi.fn().mockResolvedValue(true);
+    const upsertJobScheduler = vi.fn().mockResolvedValue({});
+    const getJobScheduler = vi.fn().mockResolvedValue({
+      key: "cron",
+      id: "cron",
+      name: "cron",
+      pattern: "0 2 * * *",
+      tz: "UTC",
+    });
+    const catalog = {
+      register,
+      list: vi.fn().mockResolvedValue(["reports"]),
+    } as unknown as QueueCatalog;
+    const queues = {
+      getQueue: vi.fn().mockReturnValue({ upsertJobScheduler, getJobScheduler }),
+    } as unknown as QueueFactory;
+    const service = new ScheduleService(queues, catalog, config());
+
+    await service.upsertSchedule({
+      id: "cron",
+      queue: "reports",
+      pattern: "0 2 * * *",
+      execution: { type: "http", url: "https://example.com/hook" },
+    });
+
+    expect(upsertJobScheduler.mock.calls[0]?.[1]).toMatchObject({
+      pattern: "0 2 * * *",
+      tz: "UTC",
+    });
+  });
 });
 
 describe("backend failure classification", () => {

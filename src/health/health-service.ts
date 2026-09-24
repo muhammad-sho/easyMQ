@@ -1,5 +1,6 @@
 import { ApiError } from "../api/errors.js";
 import type { AppRole } from "../config/schema.js";
+import type { Logger } from "../infrastructure/logging/logger.js";
 
 export interface ReadinessCheck {
   name: string;
@@ -29,7 +30,10 @@ export class HealthService {
   private readonly checks: ReadinessCheck[] = [];
   private readonly startedAt = Date.now();
 
-  constructor(private readonly role: AppRole) {}
+  constructor(
+    private readonly role: AppRole,
+    private readonly logger?: Logger,
+  ) {}
 
   addCheck(check: ReadinessCheck): void {
     this.checks.push(check);
@@ -51,10 +55,13 @@ export class HealthService {
           await check();
           return { name, ok: true as const };
         } catch (err) {
+          // Readiness is intentionally unauthenticated for orchestrators.
+          // Keep backend details in server logs, never in the probe response.
+          this.logger?.warn({ err, check: name }, "Readiness check failed");
           return {
             name,
             ok: false as const,
-            error: err instanceof Error ? err.message : String(err),
+            error: "unavailable",
           };
         }
       }),

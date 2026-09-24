@@ -114,9 +114,15 @@ export class ScheduleService {
 
     const queue = this.queues.getQueue(opts.queue);
     const repeatOpts: Omit<RepeatOptions, "key"> = {};
-    if (opts.pattern !== undefined) repeatOpts.pattern = opts.pattern;
+    if (opts.pattern !== undefined) {
+      repeatOpts.pattern = opts.pattern;
+      // BullMQ delegates cron parsing to cron-parser, whose omitted timezone
+      // follows the worker process timezone. easyMQ's public contract is UTC
+      // by default, so make that choice explicit and deployment-independent.
+      repeatOpts.tz = opts.timezone ?? "UTC";
+    }
     if (opts.everyMs !== undefined) repeatOpts.every = opts.everyMs;
-    if (opts.timezone !== undefined) repeatOpts.tz = opts.timezone;
+    if (opts.everyMs !== undefined && opts.timezone !== undefined) repeatOpts.tz = opts.timezone;
     if (opts.startDateMs !== undefined) repeatOpts.startDate = opts.startDateMs;
     if (opts.endDateMs !== undefined) repeatOpts.endDate = opts.endDateMs;
     if (opts.limit !== undefined) repeatOpts.limit = opts.limit;

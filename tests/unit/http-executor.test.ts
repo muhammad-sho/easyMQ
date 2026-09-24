@@ -314,6 +314,18 @@ describe("assertSafeTarget", () => {
       assertSafeTarget("missing.example", false, () => Promise.reject(new Error("ENOTFOUND"))),
     ).rejects.toMatchObject({ name: "ExecutorError" });
   });
+
+  it("honors an abort signal while DNS resolution is pending", async () => {
+    const controller = new AbortController();
+    const pending = assertSafeTarget(
+      "slow.example",
+      false,
+      () => new Promise<string[]>(() => undefined),
+      controller.signal,
+    );
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(ExecutionAbortedError);
+  });
 });
 
 describe("redactUrlForLogging", () => {

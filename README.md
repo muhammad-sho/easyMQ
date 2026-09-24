@@ -46,7 +46,7 @@ webhooks-as-a-concept, no database assumptions. A job is an arbitrary JSON
 - **Worker role**: discovers registered queues, runs one BullMQ Worker per
   queue, executes jobs via executors, handles distributed cancellation.
   Any number of workers may share a queue — BullMQ distributes and locks.
-- **Queue discovery**: easyMQ keeps only a Redis *set of queue names*.
+- **Queue discovery**: easyMQ keeps only a Redis _set of queue names_.
   Registration (`SADD` + `PUBLISH` in one atomic `MULTI`) is idempotent and
   happens **before** any job or schedule is written, so workers can always
   discover new work. Workers load the set at startup and listen for new
@@ -104,25 +104,25 @@ including scheduled jobs, lives in Redis.
 
 See `.env.example` for the full list. Highlights:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection |
-| `REDIS_KEY_PREFIX` | `easymq` | Key prefix for BullMQ + easyMQ keys |
-| `API_HOST` / `API_PORT` | `0.0.0.0` / `3000` | HTTP listen address |
-| `API_TOKEN` | — | Bearer token (required unless `AUTH_DISABLED=true`) |
-| `AUTH_DISABLED` | `false` | Dev-only auth bypass — never in production |
-| `APP_ROLE` | `both` | `api` \| `worker` \| `both` |
-| `WORKER_CONCURRENCY` | `10` | Jobs per queue per worker instance |
-| `HTTP_TIMEOUT_MS` | `30000` | Default execution timeout |
-| `HTTP_MAX_RESPONSE_BYTES` | `1048576` | Response-size limit |
-| `HTTP_MAX_REDIRECTS` | `5` | Redirect-following limit |
-| `HTTP_ALLOW_PRIVATE_NETWORK` | `false` | Operator-only switch for loopback/private targets (no per-job override) |
-| `CANCELLATION_TTL_SECONDS` | `300` | Cancellation marker TTL |
-| `SHUTDOWN_TIMEOUT_MS` | `30000` | Grace period for active jobs |
-| `LOG_LEVEL` / `LOG_PRETTY` | `info` / `false` | Logging |
-| `DEFAULT_ATTEMPTS` / `DEFAULT_BACKOFF_TYPE` / `DEFAULT_BACKOFF_DELAY_MS` | `3` / `exponential` / `5000` | Retry defaults |
-| `DEFAULT_REMOVE_ON_COMPLETE_COUNT` / `DEFAULT_REMOVE_ON_FAIL_COUNT` | `1000` / `5000` | Finished-job retention |
-| `PAGE_DEFAULT_LIMIT` / `PAGE_MAX_LIMIT` | `50` / `200` | Pagination bounds |
+| Variable                                                                 | Default                      | Purpose                                                                 |
+| ------------------------------------------------------------------------ | ---------------------------- | ----------------------------------------------------------------------- |
+| `REDIS_URL`                                                              | `redis://127.0.0.1:6379`     | Redis connection                                                        |
+| `REDIS_KEY_PREFIX`                                                       | `easymq`                     | Key prefix for BullMQ + easyMQ keys                                     |
+| `API_HOST` / `API_PORT`                                                  | `0.0.0.0` / `3000`           | HTTP listen address                                                     |
+| `API_TOKEN`                                                              | —                            | Bearer token (required unless `AUTH_DISABLED=true`)                     |
+| `AUTH_DISABLED`                                                          | `false`                      | Dev-only auth bypass — never in production                              |
+| `APP_ROLE`                                                               | `both`                       | `api` \| `worker` \| `both`                                             |
+| `WORKER_CONCURRENCY`                                                     | `10`                         | Jobs per queue per worker instance                                      |
+| `HTTP_TIMEOUT_MS`                                                        | `30000`                      | Default execution timeout                                               |
+| `HTTP_MAX_RESPONSE_BYTES`                                                | `1048576`                    | Response-size limit                                                     |
+| `HTTP_MAX_REDIRECTS`                                                     | `5`                          | Redirect-following limit                                                |
+| `HTTP_ALLOW_PRIVATE_NETWORK`                                             | `false`                      | Operator-only switch for loopback/private targets (no per-job override) |
+| `CANCELLATION_TTL_SECONDS`                                               | `300`                        | Cancellation marker TTL                                                 |
+| `SHUTDOWN_TIMEOUT_MS`                                                    | `30000`                      | Grace period for active jobs                                            |
+| `LOG_LEVEL` / `LOG_PRETTY`                                               | `info` / `false`             | Logging                                                                 |
+| `DEFAULT_ATTEMPTS` / `DEFAULT_BACKOFF_TYPE` / `DEFAULT_BACKOFF_DELAY_MS` | `3` / `exponential` / `5000` | Retry defaults                                                          |
+| `DEFAULT_REMOVE_ON_COMPLETE_COUNT` / `DEFAULT_REMOVE_ON_FAIL_COUNT`      | `1000` / `5000`              | Finished-job retention                                                  |
+| `PAGE_DEFAULT_LIMIT` / `PAGE_MAX_LIMIT`                                  | `50` / `200`                 | Pagination bounds                                                       |
 
 ## Authentication
 
@@ -281,13 +281,13 @@ numbers run first among prioritized jobs. Example: `"priority": 10`.
 
 `execution: { type: "http", url, method, headers, body, timeoutMs }` performs
 a generic outbound request (timeouts, response-size and redirect limits
-enforced). Job responses expose the execution metadata with header *names*
+enforced). Job responses expose the execution metadata with header _names_
 only (`headerNames`) — header values never leave the server, while the worker
 reads the stored originals. Credentials in URLs are redacted in logs, and
 request headers / response bodies are never logged.
 
 Outbound destinations are validated against an SSRF policy on the initial
-target and **every redirect hop**: a hostname is rejected when *any* resolved
+target and **every redirect hop**: a hostname is rejected when _any_ resolved
 address is blocked. Always blocked: unspecified, multicast, reserved,
 documentation, carrier-grade NAT, and cloud metadata-service IPs
 (`169.254.169.254`, `100.100.100.100`, `fd00:ec2::254`). Loopback,
@@ -358,7 +358,7 @@ subscriptions, queues, and Redis connections → exit. The stop procedure
 itself always completes in bounded time. Work interrupted by force-close is
 reclaimed through BullMQ lock expiry and stalled-job recovery — no custom
 recovery. Note the inherent limit: an executor that ignores its AbortSignal
-*and* holds live handles (e.g. an open socket) can delay process exit;
+_and_ holds live handles (e.g. an open socket) can delay process exit;
 easyMQ guarantees bounded shutdown of everything it owns.
 
 ### API / worker roles
@@ -379,7 +379,8 @@ Redis data loss. easyMQ adds only the queue-name set, cancellation markers
 
 - `GET /health/live` — process is running. Never touches Redis.
 - `GET /health/ready` — role-aware readiness (Redis reachable). Returns
-  `503 SERVICE_UNAVAILABLE` with per-check details when not ready.
+  `503 SERVICE_UNAVAILABLE` with generic per-check status when not ready;
+  backend failure details are kept in server logs.
   Both are unauthenticated for orchestrator probes.
 
 ### Production deployment

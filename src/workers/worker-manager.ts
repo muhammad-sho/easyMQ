@@ -32,7 +32,7 @@ export interface WorkerManagerStopOptions {
    * The application always passes the configured shutdown deadline.
    */
   shutdownTimeoutMs?: number;
-  /** Extra wait (ms) after aborting in-flight attempts before proceeding. */
+  /** Maximum extra wait (ms) for BullMQ's forced close to release resources. */
   forceGraceMs?: number;
 }
 
@@ -57,11 +57,13 @@ function sleep(ms: number): Promise<void> {
  * Multiple instances may manage the same queue — BullMQ distributes
  * work and locking across them.
  *
- * Shutdown: graceful `close()` first so cooperative executors drain;
- * on deadline expiry, in-flight attempts are aborted and workers
- * force-closed, then easyMQ-owned resources are released and stop()
- * resolves. Locks left behind expire via BullMQ TTL and unfinished work
- * is reclaimed through BullMQ stalled-job recovery — no custom recovery.
+ * Shutdown: locally pause each worker first, so it cannot fetch more jobs
+ * while active jobs drain. This deliberately defers `close()` until the
+ * decision is made: BullMQ 6.3.8 memoizes close(), so calling close(false)
+ * first would make a later close(true) unable to force-close. On deadline
+ * expiry, in-flight attempts are aborted and the first close call is forced.
+ * Locks left behind expire via BullMQ TTL and unfinished work is reclaimed
+ * through BullMQ stalled-job recovery — no custom recovery.
  */
 export class WorkerManager {
   private readonly managed = new Map<string, ManagedQueue>();
@@ -204,58 +206,67 @@ export class WorkerManager {
     this.started = false;
     this.deps.catalog.offQueueRegistered(this.onRegistered);
 
-    // 1. Stop fetching new work; let active jobs finish (graceful close).
+    // 1. Pause locally. pause(false) prevents future fetches while resolving
+    // only once active jobs drain; importantly, it does not put Worker.close
+    // into its irreversible memoized closing state.
     const managed = [...this.managed.entries()];
     this.managed.clear();
-    const graceful = Promise.all(
+    const drained = Promise.all(
       managed.map(async ([name, { worker }]) => {
         try {
-          await worker.close();
+          await worker.pause(false);
         } catch (err) {
-          this.deps.logger?.warn({ err, queue: name }, "Error closing worker");
+          this.deps.logger?.warn({ err, queue: name }, "Error pausing worker for shutdown");
         }
       }),
     );
 
     const deadlineMs = options.shutdownTimeoutMs ?? 0;
+    let drainedBeforeDeadline = true;
     if (deadlineMs > 0) {
-      const drained = await Promise.race([
-        graceful.then(() => true),
+      drainedBeforeDeadline = await Promise.race([
+        drained.then(() => true),
         sleep(deadlineMs).then(() => false),
       ]);
-      if (!drained) {
-        this.deps.logger?.warn(
-          { event: "shutdown-force", deadlineMs },
-          "Shutdown deadline exceeded — aborting in-flight attempts and force-closing workers",
-        );
-        // Abort in-flight attempts so cooperative executors settle
-        // quickly; BullMQ reclaims anything left via lock expiry and
-        // stalled-job recovery.
-        for (const [name, { worker }] of managed) {
-          try {
-            worker.cancelAllJobs("shutdown");
-          } catch (err) {
-            this.deps.logger?.warn({ err, queue: name }, "Error aborting worker jobs");
-          }
-        }
-        // BullMQ 6.3.8 memoizes close(): close(true) on an already-closing
-        // worker returns the same pending promise, so bound this wait and
-        // proceed to release easyMQ-owned resources regardless. Detached
-        // graceful promises settle if/when their executors settle.
-        const forceGraceMs = options.forceGraceMs ?? 5000;
-        const forceClose = Promise.all(
-          managed.map(async ([name, { worker }]) => {
-            try {
-              await worker.close(true);
-            } catch (err) {
-              this.deps.logger?.warn({ err, queue: name }, "Error force-closing worker");
-            }
-          }),
-        );
-        await Promise.race([graceful, forceClose, sleep(forceGraceMs)]);
-      }
     } else {
-      await graceful;
+      await drained;
+    }
+
+    if (!drainedBeforeDeadline) {
+      this.deps.logger?.warn(
+        { event: "shutdown-force", deadlineMs },
+        "Shutdown deadline exceeded — aborting in-flight attempts and force-closing workers",
+      );
+      // Cooperative executors settle from the signal; non-cooperative ones
+      // are detached by close(true), leaving BullMQ to recover their jobs.
+      for (const [name, { worker }] of managed) {
+        try {
+          worker.cancelAllJobs("shutdown");
+        } catch (err) {
+          this.deps.logger?.warn({ err, queue: name }, "Error aborting worker jobs");
+        }
+      }
+      const forceGraceMs = options.forceGraceMs ?? 5000;
+      const forceClose = Promise.all(
+        managed.map(async ([name, { worker }]) => {
+          try {
+            await worker.close(true);
+          } catch (err) {
+            this.deps.logger?.warn({ err, queue: name }, "Error force-closing worker");
+          }
+        }),
+      );
+      await Promise.race([forceClose, sleep(forceGraceMs)]);
+    } else {
+      await Promise.all(
+        managed.map(async ([name, { worker }]) => {
+          try {
+            await worker.close();
+          } catch (err) {
+            this.deps.logger?.warn({ err, queue: name }, "Error closing worker");
+          }
+        }),
+      );
     }
 
     // 2. Close cancellation subscription.

@@ -144,6 +144,24 @@ export class RedisConnectionManager {
     );
   }
 
+  /**
+   * Immediately release every owned connection without sending Redis QUIT.
+   * Used only when bootstrap fails before a usable application lifecycle
+   * exists; it prevents ioredis reconnect timers from keeping the process up.
+   */
+  disconnectAll(): void {
+    const clients = [...this.clients];
+    this.clients.clear();
+    this.shared = undefined;
+    for (const client of clients) {
+      try {
+        client.disconnect();
+      } catch {
+        // best effort during failed startup
+      }
+    }
+  }
+
   get size(): number {
     return this.clients.size;
   }

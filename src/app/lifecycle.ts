@@ -1,17 +1,6 @@
 import type { AppConfig } from "../config/schema.js";
 import { buildSystem, type BuiltSystem } from "./build-app.js";
 
-function withTimeout(promise: Promise<void>, ms: number): Promise<void> {
-  if (ms <= 0) return promise;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("shutdown deadline exceeded")), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
-
 /**
  * Start the system for the configured role and wait for SIGTERM/SIGINT.
  *
@@ -19,8 +8,8 @@ function withTimeout(promise: Promise<void>, ms: number): Promise<void> {
  * active jobs to finish within the deadline (then abort in-flight attempts
  * and force-close) -> close subscriptions -> release BullMQ/Redis resources
  * -> exit. BullMQ recovers unfinished work after a crash; no custom recovery.
- * The outer timeout below is a final backstop: WorkerManager.stop() already
- * bounds the worker phase itself.
+ * WorkerManager owns the worker deadline and must be allowed to finish its
+ * force-close/resource cleanup rather than being abandoned by Promise.race.
  */
 export async function run(config: AppConfig): Promise<void> {
   const system: BuiltSystem = await buildSystem(config);
@@ -47,13 +36,6 @@ export async function run(config: AppConfig): Promise<void> {
   const signal = await shutdownRequested;
   logger.info({ event: "shutdown-signal", signal }, "Shutdown requested");
 
-  try {
-    await withTimeout(system.close(), config.shutdownTimeoutMs);
-    logger.info({ event: "shutdown-complete" }, "easyMQ shut down cleanly");
-  } catch (err) {
-    logger.warn(
-      { err, event: "shutdown-timeout", deadlineMs: config.shutdownTimeoutMs },
-      "Shutdown deadline exceeded — terminating with work potentially unfinished",
-    );
-  }
+  await system.close();
+  logger.info({ event: "shutdown-complete" }, "easyMQ shut down cleanly");
 }

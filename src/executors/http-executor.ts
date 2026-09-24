@@ -199,6 +199,30 @@ async function systemResolver(hostname: string): Promise<string[]> {
   return (await lookup(hostname, { all: true })).map((entry) => entry.address);
 }
 
+/** Reject promptly when the executor's cancellation/timeout signal fires. */
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(new ExecutionAbortedError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      cleanup();
+      reject(new ExecutionAbortedError());
+    };
+    const cleanup = (): void => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (err: unknown) => {
+        cleanup();
+        reject(err instanceof Error ? err : new Error("DNS resolution failed."));
+      },
+    );
+  });
+}
+
 /**
  * SSRF guard: resolve the hostname and reject unsafe destinations.
  * A hostname is rejected when ANY resolved address is blocked — one
@@ -216,11 +240,13 @@ export async function assertSafeTarget(
   hostname: string,
   allowPrivateNetwork: boolean,
   resolve: DnsResolver = systemResolver,
+  signal?: AbortSignal,
 ): Promise<void> {
   let addresses: string[];
   try {
-    addresses = await resolve(hostname);
+    addresses = await raceWithAbort(resolve(hostname), signal);
   } catch (err) {
+    if (err instanceof ExecutionAbortedError) throw err;
     throw new ExecutorError("EXECUTOR_ERROR", `DNS lookup failed for '${hostname}'.`, {
       cause: err,
     });
@@ -391,7 +417,7 @@ export class HttpExecutor implements Executor {
     const { autoContentType, signal, allowPrivate, queue, jobId } = args;
 
     for (let redirect = 0; redirect <= this.options.maxRedirects; redirect++) {
-      await assertSafeTarget(url.hostname, allowPrivate);
+      await assertSafeTarget(url.hostname, allowPrivate, systemResolver, signal);
       this.logger?.debug(
         { event: "http-request", queue, jobId, url: redactUrlForLogging(url.toString()), method },
         "Outbound HTTP request",
