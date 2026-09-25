@@ -83,7 +83,20 @@ npm run lint
 
 ## Publish
 
+Releases are published to npm by the [`publish-n8n`
+workflow](../.github/workflows/publish-n8n.yml), which uses the
+`NPM_TOKEN` repository secret:
+
 ```bash
-npm version patch|minor|major
+npm version patch|minor|major   # bumps n8n-nodes-easymq/package.json
+git push origin main
+git tag n8n-nodes-easymq-v0.1.1  # must match package.json
+git push origin n8n-nodes-easymq-v0.1.1
+```
+
+Pushing the tag builds, verifies, and runs `npm publish --access public`.
+Manual publish (needs an npm token with 2FA bypass or `--otp`):
+
+```bash
 npm publish --access public
 ```
