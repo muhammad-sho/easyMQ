@@ -1,5 +1,4 @@
 import { ApiError } from "../api/errors.js";
-import type { AppRole } from "../config/schema.js";
 import type { Logger } from "../infrastructure/logging/logger.js";
 
 export interface ReadinessCheck {
@@ -10,30 +9,25 @@ export interface ReadinessCheck {
 export interface LivenessStatus {
   status: "ok";
   service: "easymq";
-  role: AppRole;
   uptimeSeconds: number;
 }
 
 export interface ReadinessStatus {
   status: "ok";
   service: "easymq";
-  role: AppRole;
   checks: Array<{ name: string; ok: boolean; error?: string }>;
 }
 
 /**
  * Health reporting. Liveness never touches Redis (a degraded Redis must
- * not kill the process); readiness verifies everything the configured
- * role needs. Routes contain no Redis logic themselves.
+ * not kill the process); readiness verifies Redis reachability. Routes
+ * contain no Redis logic themselves.
  */
 export class HealthService {
   private readonly checks: ReadinessCheck[] = [];
   private readonly startedAt = Date.now();
 
-  constructor(
-    private readonly role: AppRole,
-    private readonly logger?: Logger,
-  ) {}
+  constructor(private readonly logger?: Logger) {}
 
   addCheck(check: ReadinessCheck): void {
     this.checks.push(check);
@@ -43,7 +37,6 @@ export class HealthService {
     return {
       status: "ok",
       service: "easymq",
-      role: this.role,
       uptimeSeconds: Math.floor((Date.now() - this.startedAt) / 1000),
     };
   }
@@ -75,7 +68,6 @@ export class HealthService {
     return {
       status: "ok",
       service: "easymq",
-      role: this.role,
       checks: results,
     };
   }

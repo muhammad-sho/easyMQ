@@ -1,9 +1,8 @@
 import pino, { type DestinationStream, type Logger } from "pino";
-import type { AppRole, LogLevel } from "../../config/schema.js";
+import type { LogLevel } from "../../config/schema.js";
 
 export interface CreateLoggerOptions {
   level?: LogLevel;
-  role?: AppRole;
   pretty?: boolean;
   /** Optional pino destination (defaults to stdout). Useful for capturing logs in tests. */
   destination?: DestinationStream;
@@ -16,9 +15,6 @@ export interface CreateLoggerOptions {
 const REDACT_PATHS = [
   "apiToken",
   "token",
-  "password",
-  "passwd",
-  "*.password",
   "*.apiToken",
   "*.token",
   "req.headers.authorization",
@@ -30,23 +26,16 @@ const REDACT_PATHS = [
   "cookie",
   "body.password",
   "body.token",
-  "execution.headers.authorization",
   "headers.*authorization*",
 ];
 
-/**
- * Create the root structured JSON logger.
- * Service/role base fields are attached to every line.
- */
+/** Create the root structured JSON logger. */
 export function createLogger(options: CreateLoggerOptions = {}): Logger {
-  const { level = "info", role, pretty = false, destination } = options;
+  const { level = "info", pretty = false, destination } = options;
   return pino(
     {
       level,
-      base: {
-        service: "easymq",
-        ...(role !== undefined ? { role } : {}),
-      },
+      base: { service: "easymq" },
       timestamp: pino.stdTimeFunctions.isoTime,
       redact: {
         paths: REDACT_PATHS,
@@ -65,7 +54,7 @@ export function createLogger(options: CreateLoggerOptions = {}): Logger {
   );
 }
 
-/** Create a child logger carrying queue/job context. */
+/** Create a child logger carrying queue/message context. */
 export function childLogger(
   log: Logger,
   bindings: Record<string, string | number | boolean>,

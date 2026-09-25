@@ -1,8 +1,5 @@
 import { z } from "zod";
 
-export const appRoleSchema = z.enum(["api", "worker", "both"]);
-export type AppRole = z.infer<typeof appRoleSchema>;
-
 export const logLevelSchema = z.enum([
   "fatal",
   "error",
@@ -14,52 +11,27 @@ export const logLevelSchema = z.enum([
 ]);
 export type LogLevel = z.infer<typeof logLevelSchema>;
 
-export const backoffTypeSchema = z.enum(["fixed", "exponential"]);
-export type DefaultBackoffType = z.infer<typeof backoffTypeSchema>;
-
 /**
  * Fully-resolved, validated application configuration.
- * All values have concrete types here — environment parsing
- * (strings -> numbers/booleans) happens in `env.ts` before validation.
  *
- * `apiToken` may be omitted at load time when serving the API: startup
- * resolves a deployment-scoped token from Redis (`resolveApiAuth`) unless
- * `API_TOKEN` is set or `AUTH_DISABLED=true`. No known default secret exists.
+ * `apiToken` may be omitted at load time: startup resolves a
+ * deployment-scoped token from Redis (`resolveApiAuth`) unless `API_TOKEN`
+ * is set or `AUTH_DISABLED=true`. No known default secret exists.
  */
-export const configSchema = z
-  .object({
-    redisUrl: z.string().min(1),
-    redisKeyPrefix: z.string().min(1),
-    apiHost: z.string().min(1),
-    apiPort: z.number().int().min(0).max(65535),
-    apiToken: z.string().min(1).optional(),
-    authDisabled: z.boolean(),
-    appRole: appRoleSchema,
-    workerConcurrency: z.number().int().min(1).max(1000),
-    httpTimeoutMs: z.number().int().min(100).max(600_000),
-    httpMaxResponseBytes: z.number().int().min(1024).max(100_000_000),
-    httpMaxRedirects: z.number().int().min(0).max(20),
-    httpAllowPrivateNetwork: z.boolean(),
-    cancellationTtlSeconds: z.number().int().min(10).max(86_400),
-    shutdownTimeoutMs: z.number().int().min(0).max(600_000),
-    logLevel: logLevelSchema,
-    logPretty: z.boolean(),
-    defaultAttempts: z.number().int().min(1).max(100),
-    defaultBackoffType: backoffTypeSchema,
-    defaultBackoffDelayMs: z.number().int().min(0).max(3_600_000),
-    defaultRemoveOnCompleteCount: z.number().int().min(0).max(1_000_000),
-    defaultRemoveOnFailCount: z.number().int().min(0).max(1_000_000),
-    pageDefaultLimit: z.number().int().min(1).max(1000),
-    pageMaxLimit: z.number().int().min(1).max(1000),
-  })
-  .superRefine((cfg, ctx) => {
-    if (cfg.pageDefaultLimit > cfg.pageMaxLimit) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["pageDefaultLimit"],
-        message: "PAGE_DEFAULT_LIMIT must not exceed PAGE_MAX_LIMIT.",
-      });
-    }
-  });
+export const configSchema = z.object({
+  redisUrl: z.string().min(1),
+  redisKeyPrefix: z.string().min(1),
+  apiHost: z.string().min(1),
+  apiPort: z.number().int().min(0).max(65535),
+  apiToken: z.string().min(1).optional(),
+  authDisabled: z.boolean(),
+  defaultVisibilityTimeoutMs: z.number().int().min(100).max(43_200_000),
+  defaultPrefetch: z.number().int().min(1).max(1000),
+  maxConsumeCount: z.number().int().min(1).max(1000),
+  sweeperIntervalMs: z.number().int().min(100).max(60_000),
+  maxMessageBytes: z.number().int().min(1024).max(100_000_000),
+  logLevel: logLevelSchema,
+  logPretty: z.boolean(),
+});
 
 export type AppConfig = z.infer<typeof configSchema>;

@@ -1,424 +1,215 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppInstance, ApiServices } from "../../src/api/server.js";
 import { buildApp } from "../../src/api/server.js";
+import type { BrokerService } from "../../src/broker/broker.js";
 import { loadConfig } from "../../src/config/env.js";
-import { createLogger } from "../../src/infrastructure/logging/logger.js";
 import { HealthService } from "../../src/health/health-service.js";
-import type { JobService } from "../../src/jobs/job-service.js";
-import { JobService as RealJobService } from "../../src/jobs/job-service.js";
-import { QueueService as RealQueueService } from "../../src/queues/queue-service.js";
-import { ScheduleService as RealScheduleService } from "../../src/jobs/schedule-service.js";
-import type { QueueService } from "../../src/queues/queue-service.js";
-import type { ScheduleService } from "../../src/jobs/schedule-service.js";
-import type { EasyMQJob } from "../../src/jobs/job-types.js";
+import { createLogger } from "../../src/infrastructure/logging/logger.js";
 
 const TOKEN = "test-token-123";
 
-function sampleJob(): EasyMQJob {
-  return {
-    id: "job-1",
-    queue: "emails",
-    name: "default",
-    state: "waiting",
-    payload: { to: "a@example.com" },
-    execution: { type: "http", url: "https://example.com/hook" },
-    attemptsMade: 0,
-    priority: 0,
-    delayMs: 0,
-    timestampMs: 1_700_000_000_000,
-    processedOnMs: null,
-    finishedOnMs: null,
-    failedReason: null,
-    returnValue: null,
-  };
-}
-
-async function buildTestApp(
-  overrides: {
-    authDisabled?: boolean;
-    readinessFails?: boolean;
-  } = {},
-): Promise<{ app: AppInstance; jobService: JobService }> {
-  const config = loadConfig({
-    API_TOKEN: TOKEN,
-    ...(overrides.authDisabled ? { AUTH_DISABLED: "true" } : {}),
-  });
-  const logger = createLogger({ level: "silent", role: "api" });
-
-  const queueService = {
-    listQueues: vi.fn().mockResolvedValue(["emails", "reports"]),
-    getQueue: vi
-      .fn()
-      .mockResolvedValue({ name: "emails", isPaused: false, counts: { waiting: 1 } }),
-    pauseQueue: vi.fn().mockResolvedValue({ name: "emails", isPaused: true, counts: {} }),
-    resumeQueue: vi.fn().mockResolvedValue({ name: "emails", isPaused: false, counts: {} }),
-    getJobCounts: vi.fn().mockResolvedValue({ waiting: 1, active: 0 }),
-  } as unknown as QueueService;
-
-  const jobService = {
-    createJob: vi.fn().mockImplementation(() => Promise.resolve(sampleJob())),
-    getJob: vi.fn().mockResolvedValue(sampleJob()),
-    listJobs: vi
-      .fn()
-      .mockResolvedValue({ jobs: [sampleJob()], offset: 0, limit: 50, nextOffset: null }),
-    removeJob: vi.fn().mockResolvedValue(undefined),
-    retryJob: vi.fn().mockResolvedValue({ ...sampleJob(), state: "waiting" }),
-    promoteJob: vi.fn().mockResolvedValue(sampleJob()),
-    changeJobDelay: vi.fn().mockResolvedValue(sampleJob()),
-    cancelJob: vi.fn().mockResolvedValue({ ...sampleJob(), state: "active" }),
-  } as unknown as JobService;
-
-  const scheduleService = {
-    upsertSchedule: vi.fn().mockResolvedValue({
-      id: "nightly",
-      queue: "reports",
-      name: "nightly",
-      pattern: "0 2 * * *",
-      everyMs: null,
-      timezone: null,
-      nextRunAtMs: null,
-      iterationCount: null,
-      limit: null,
-      startDateMs: null,
-      endDateMs: null,
-    }),
-    getSchedule: vi.fn().mockResolvedValue({
-      id: "nightly",
-      queue: "reports",
-      name: "nightly",
-      pattern: "0 2 * * *",
-      everyMs: null,
-      timezone: null,
-      nextRunAtMs: null,
-      iterationCount: null,
-      limit: null,
-      startDateMs: null,
-      endDateMs: null,
-    }),
-    listSchedules: vi
-      .fn()
-      .mockResolvedValue({ schedules: [], offset: 0, limit: 50, nextOffset: null }),
-    removeSchedule: vi.fn().mockResolvedValue(undefined),
-  } as unknown as ScheduleService;
-
-  const healthService = new HealthService("api");
-  if (overrides.readinessFails) {
-    healthService.addCheck({
-      name: "redis",
-      check: () => Promise.reject(new Error("connection refused")),
-    });
-  }
-
-  const services: ApiServices = {
-    config,
-    logger,
-    queueService,
-    jobService,
-    scheduleService,
-    healthService,
-  };
+async function buildTestApp(broker: BrokerService): Promise<AppInstance> {
+  const config = loadConfig({ API_TOKEN: TOKEN });
+  const logger = createLogger({ level: "silent" });
+  const healthService = new HealthService(logger);
+  const services: ApiServices = { config, logger, broker, healthService };
   const app = await buildApp(services);
-  return { app, jobService };
+  await app.ready();
+  return app;
 }
 
-function authHeaders() {
-  return { authorization: `Bearer ${TOKEN}` };
+function mockBroker(): BrokerService {
+  return {
+    declareQueue: vi
+      .fn()
+      .mockImplementation((queue: string) => Promise.resolve({ queue, created: true })),
+    listQueues: vi
+      .fn()
+      .mockResolvedValue([{ queue: "orders", ready: 2, delayed: 0, unacked: 0, consumers: 0 }]),
+    getQueue: vi.fn().mockImplementation((queue: string) =>
+      Promise.resolve({
+        queue,
+        ready: 1,
+        delayed: 0,
+        unacked: 0,
+        consumers: [],
+        published: 1,
+        delivered: 0,
+        acked: 0,
+        requeued: 0,
+        deleted: 0,
+        createdAt: 1,
+      }),
+    ),
+    deleteQueue: vi.fn().mockResolvedValue(undefined),
+    publish: vi.fn().mockImplementation((queue: string) =>
+      Promise.resolve({
+        id: "msg_123",
+        queue,
+        state: "ready",
+        availableAt: 1,
+        createdAt: 1,
+      }),
+    ),
+    getMessage: vi.fn().mockImplementation((queue: string, id: string) =>
+      Promise.resolve({
+        id,
+        queue,
+        data: { message: "hello" },
+        state: "ready",
+        consumerId: null,
+        deliveryCount: 0,
+        availableAt: 0,
+        visibleAt: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    ),
+    consume: vi.fn().mockImplementation((queue: string, opts: { consumerId?: string }) =>
+      Promise.resolve({
+        consumerId: opts.consumerId ?? "cons_abc",
+        messages: [
+          {
+            id: "msg_123",
+            queue,
+            data: { message: "hello" },
+            deliveryCount: 1,
+            redelivered: false,
+            visibleAt: 2,
+          },
+        ],
+      }),
+    ),
+    ack: vi.fn().mockResolvedValue({ deliveries: 1 }),
+    requeue: vi.fn().mockResolvedValue({ deliveries: 1 }),
+    deleteMessage: vi.fn().mockResolvedValue({ state: "ready" }),
+    setMessageTtl: vi
+      .fn()
+      .mockImplementation((_queue: string, _id: string) =>
+        Promise.resolve({ state: "delayed", availableAt: 60001 }),
+      ),
+    cancelConsumer: vi
+      .fn()
+      .mockImplementation((_queue: string, _consumerId: string) =>
+        Promise.resolve({ requeued: 2 }),
+      ),
+  } as unknown as BrokerService;
 }
 
-function jsonBody<T>(res: { json(): unknown }): T {
-  return res.json() as T;
-}
-
-describe("jobs API", () => {
+describe("broker routes (mocked service, no Redis)", () => {
   let app: AppInstance;
-  beforeAll(async () => {
-    ({ app } = await buildTestApp());
+  let broker: BrokerService;
+
+  beforeEach(async () => {
+    broker = mockBroker();
+    app = await buildTestApp(broker);
   });
 
-  it("creates a job (201) and validates input (400)", async () => {
-    const created = await app.inject({
-      method: "POST",
-      url: "/jobs",
-      headers: authHeaders(),
-      payload: { queue: "emails", execution: { type: "http", url: "https://example.com/hook" } },
-    });
-    expect(created.statusCode).toBe(201);
-    expect(jsonBody<{ id: string }>(created).id).toBe("job-1");
+  const auth = { authorization: `Bearer ${TOKEN}` };
 
-    const invalid = await app.inject({
-      method: "POST",
-      url: "/jobs",
-      headers: authHeaders(),
-      payload: { queue: "emails", execution: { type: "http", url: "ftp://x" } },
-    });
-    expect(invalid.statusCode).toBe(400);
-    expect(jsonBody<{ error: { code: string } }>(invalid).error.code).toBe("VALIDATION_ERROR");
+  it("rejects unauthenticated requests", async () => {
+    const res = await app.inject({ method: "GET", url: "/queues" });
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toMatchObject({ error: { code: "UNAUTHENTICATED" } });
   });
 
-  it("rejects per-job network-policy overrides (400)", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/jobs",
-      headers: authHeaders(),
-      payload: {
-        queue: "emails",
-        execution: { type: "http", url: "https://example.com/hook", allowPrivateNetwork: true },
-      },
-    });
-    expect(res.statusCode).toBe(400);
+  it("declares, lists, inspects, and deletes queues", async () => {
+    let res = await app.inject({ method: "PUT", url: "/queues/orders", headers: auth });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ queue: "orders", created: true });
+
+    res = await app.inject({ method: "GET", url: "/queues", headers: auth });
+    expect(res.json<{ queues: unknown[] }>().queues).toHaveLength(1);
+
+    res = await app.inject({ method: "GET", url: "/queues/orders", headers: auth });
+    expect(res.json()).toMatchObject({ queue: "orders" });
+
+    res = await app.inject({ method: "DELETE", url: "/queues/orders", headers: auth });
+    expect(res.statusCode).toBe(204);
   });
 
-  it("forwards caller headers to the service (stored, never rendered)", async () => {
-    const { app: headerApp, jobService } = await buildTestApp();
-    const res = await headerApp.inject({
+  it("publishes, inspects, consumes, acks, and requeues messages", async () => {
+    let res = await app.inject({
       method: "POST",
-      url: "/jobs",
-      headers: authHeaders(),
-      payload: {
-        queue: "emails",
-        execution: {
-          type: "http",
-          url: "https://example.com/hook",
-          headers: { authorization: "Bearer header-secret-1" },
-        },
-      },
+      url: "/queues/orders/messages",
+      headers: auth,
+      payload: { data: { message: "hello" } },
     });
     expect(res.statusCode).toBe(201);
-    // Headers reach the stored execution so the worker can send them...
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn() has no this-scoping hazard
-    const createJobMock = vi.mocked(jobService.createJob);
-    expect(createJobMock).toHaveBeenCalledTimes(1);
-    const sent = createJobMock.mock.calls[0]?.[0];
-    expect(sent?.execution).toMatchObject({
-      headers: { authorization: "Bearer header-secret-1" },
-    });
-    // ...but values never appear in the HTTP response.
-    expect(res.body).not.toContain("header-secret-1");
-  });
+    expect(res.json()).toMatchObject({ id: "msg_123" });
 
-  it("lists, gets, retries, promotes, delays, cancels and removes jobs", async () => {
-    const h = authHeaders();
-    expect(
-      (await app.inject({ method: "GET", url: "/queues/emails/jobs", headers: h })).statusCode,
-    ).toBe(200);
-    expect(
-      (await app.inject({ method: "GET", url: "/queues/emails/jobs/job-1", headers: h }))
-        .statusCode,
-    ).toBe(200);
-    expect(
-      (await app.inject({ method: "POST", url: "/queues/emails/jobs/job-1/retry", headers: h }))
-        .statusCode,
-    ).toBe(200);
-    expect(
-      (await app.inject({ method: "POST", url: "/queues/emails/jobs/job-1/promote", headers: h }))
-        .statusCode,
-    ).toBe(200);
-    const delayed = await app.inject({
-      method: "PATCH",
-      url: "/queues/emails/jobs/job-1/delay",
-      headers: h,
-      payload: { delayMs: 1000 },
-    });
-    expect(delayed.statusCode).toBe(200);
-    const cancel = await app.inject({
+    res = await app.inject({
       method: "POST",
-      url: "/queues/emails/jobs/job-1/cancel",
-      headers: h,
+      url: "/queues/orders/consume",
+      headers: auth,
+      payload: { consumerId: "worker-1", count: 5 },
     });
-    expect(cancel.statusCode).toBe(202);
-    expect(
-      (await app.inject({ method: "DELETE", url: "/queues/emails/jobs/job-1", headers: h }))
-        .statusCode,
-    ).toBe(204);
+    const consumed = res.json<{
+      consumerId: string;
+      messages: unknown[];
+    }>();
+    expect(consumed.consumerId).toBe("worker-1");
+    expect(consumed.messages).toHaveLength(1);
+
+    res = await app.inject({
+      method: "POST",
+      url: "/queues/orders/messages/msg_123/ack",
+      headers: auth,
+      payload: {},
+    });
+    expect(res.json()).toMatchObject({ acked: true, deliveries: 1 });
+
+    res = await app.inject({
+      method: "POST",
+      url: "/queues/orders/messages/msg_123/requeue",
+      headers: auth,
+      payload: { consumerId: "worker-1" },
+    });
+    expect(res.json()).toMatchObject({ requeued: true, state: "ready" });
   });
 
-  it("rejects invalid state filters", async () => {
+  it("deletes messages, changes TTL, and cancels consumers", async () => {
+    let res = await app.inject({
+      method: "DELETE",
+      url: "/queues/orders/messages/msg_123",
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(204);
+
+    res = await app.inject({
+      method: "PUT",
+      url: "/queues/orders/messages/msg_123/ttl",
+      headers: auth,
+      payload: { ttl: 60000 },
+    });
+    expect(res.json()).toMatchObject({ state: "delayed" });
+
+    res = await app.inject({
+      method: "POST",
+      url: "/queues/orders/consumers/worker-1/cancel",
+      headers: auth,
+    });
+    expect(res.json()).toMatchObject({ cancelled: true, requeued: 2 });
+  });
+
+  it("returns 400 for invalid bodies", async () => {
     const res = await app.inject({
-      method: "GET",
-      url: "/queues/emails/jobs?state=bogus",
-      headers: authHeaders(),
+      method: "POST",
+      url: "/queues/orders/messages",
+      headers: auth,
+      payload: { execution: { type: "http" } },
     });
     expect(res.statusCode).toBe(400);
-  });
-});
-
-describe("queues API", () => {
-  let app: AppInstance;
-  beforeAll(async () => {
-    ({ app } = await buildTestApp());
+    expect(res.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
   });
 
-  it("lists, inspects, pauses, resumes and counts", async () => {
-    const h = authHeaders();
-    const list = await app.inject({ method: "GET", url: "/queues", headers: h });
-    expect(list.json()).toEqual({ queues: ["emails", "reports"] });
-    expect(
-      (await app.inject({ method: "GET", url: "/queues/emails", headers: h })).statusCode,
-    ).toBe(200);
-    const paused = await app.inject({ method: "POST", url: "/queues/emails/pause", headers: h });
-    expect(jsonBody<{ isPaused: boolean }>(paused).isPaused).toBe(true);
-    const resumed = await app.inject({ method: "POST", url: "/queues/emails/resume", headers: h });
-    expect(jsonBody<{ isPaused: boolean }>(resumed).isPaused).toBe(false);
-    expect(
-      (await app.inject({ method: "GET", url: "/queues/emails/counts", headers: h })).statusCode,
-    ).toBe(200);
-  });
-});
-
-describe("schedules API", () => {
-  let app: AppInstance;
-  beforeAll(async () => {
-    ({ app } = await buildTestApp());
-  });
-
-  it("upserts, gets, lists and removes schedules", async () => {
-    const h = authHeaders();
-    const upsert = await app.inject({
-      method: "POST",
-      url: "/schedules",
-      headers: h,
-      payload: {
-        id: "nightly",
-        queue: "reports",
-        pattern: "0 2 * * *",
-        execution: { type: "http", url: "https://example.com/hook" },
-      },
-    });
-    expect(upsert.statusCode).toBe(200);
-    expect(jsonBody<{ id: string }>(upsert).id).toBe("nightly");
-    expect(
-      (await app.inject({ method: "GET", url: "/queues/reports/schedules", headers: h }))
-        .statusCode,
-    ).toBe(200);
-    expect(
-      (await app.inject({ method: "GET", url: "/queues/reports/schedules/nightly", headers: h }))
-        .statusCode,
-    ).toBe(200);
-    expect(
-      (await app.inject({ method: "DELETE", url: "/queues/reports/schedules/nightly", headers: h }))
-        .statusCode,
-    ).toBe(204);
-  });
-});
-
-describe("auth", () => {
-  let app: AppInstance;
-  let openApp: AppInstance;
-  beforeAll(async () => {
-    ({ app } = await buildTestApp());
-    ({ app: openApp } = await buildTestApp({ authDisabled: true }));
-  });
-
-  it("requires a valid Bearer token", async () => {
-    expect((await app.inject({ method: "GET", url: "/queues" })).statusCode).toBe(401);
-    expect(
-      (
-        await app.inject({
-          method: "GET",
-          url: "/queues",
-          headers: { authorization: "Bearer wrong" },
-        })
-      ).statusCode,
-    ).toBe(401);
-    expect(
-      (await app.inject({ method: "GET", url: "/queues", headers: authHeaders() })).statusCode,
-    ).toBe(200);
-    // Health probes stay public.
-    expect((await app.inject({ method: "GET", url: "/health/live" })).statusCode).toBe(200);
-    expect((await app.inject({ method: "GET", url: "/health/ready" })).statusCode).toBe(200);
-    // Tokens never leak into the 401 body.
-    const unauthenticated = await app.inject({ method: "GET", url: "/queues" });
-    expect(unauthenticated.body).not.toContain(TOKEN);
-  });
-
-  it("can be disabled explicitly for development", async () => {
-    expect((await openApp.inject({ method: "GET", url: "/queues" })).statusCode).toBe(200);
-  });
-
-  it("returns JSON 404 for unknown routes", async () => {
-    const res = await app.inject({ method: "GET", url: "/nope", headers: authHeaders() });
-    expect(res.statusCode).toBe(404);
-    expect(jsonBody<{ error: { code: string } }>(res).error.code).toBe("NOT_FOUND");
-  });
-});
-
-describe("health API", () => {
-  it("reports liveness and readiness", async () => {
-    const { app } = await buildTestApp();
-    const live = await app.inject({ method: "GET", url: "/health/live" });
-    expect(live.statusCode).toBe(200);
-    expect(jsonBody<{ status: string }>(live).status).toBe("ok");
-
-    const ready = await app.inject({ method: "GET", url: "/health/ready" });
-    expect(ready.statusCode).toBe(200);
-  });
-
-  it("reports 503 when a readiness check fails", async () => {
-    const { app } = await buildTestApp({ readinessFails: true });
-    const ready = await app.inject({ method: "GET", url: "/health/ready" });
-    expect(ready.statusCode).toBe(503);
-    const body = jsonBody<{
-      error: { code: string; details?: { checks?: Array<{ error?: string }> } };
-    }>(ready);
-    expect(body.error.code).toBe("SERVICE_UNAVAILABLE");
-    expect(JSON.stringify(body)).not.toContain("connection refused");
-    expect(body.error.details?.checks?.[0]?.error).toBe("unavailable");
-  });
-});
-
-describe("backend error mapping", () => {
-  async function buildAppWithFailingBackend(failure: "unavailable" | "unexpected") {
-    const config = loadConfig({ API_TOKEN: TOKEN });
-    const logger = createLogger({ level: "silent", role: "api" });
-    const rawError =
-      failure === "unavailable"
-        ? Object.assign(new Error("connect ECONNREFUSED 10.99.0.7:6390"), {
-            code: "ECONNREFUSED",
-          })
-        : new Error("Missing lock for job 9. failed to run clean job script");
-    const catalog = {
-      register: vi.fn().mockRejectedValue(rawError),
-      list: vi.fn().mockResolvedValue([]),
-    };
-    const queues = { getQueue: vi.fn() };
-    const jobService = new RealJobService(queues as never, catalog as never, config);
-    const queueService = new RealQueueService(queues as never, catalog as never);
-    const scheduleService = new RealScheduleService(queues as never, catalog as never, config);
-    return buildApp({
-      config,
-      logger,
-      queueService,
-      jobService,
-      scheduleService,
-      healthService: new HealthService("api"),
-    });
-  }
-
-  it("maps registry outages to 503 without backend details", async () => {
-    const app = await buildAppWithFailingBackend("unavailable");
+  it("maps empty JSON bodies to VALIDATION_ERROR, not INTERNAL_ERROR", async () => {
     const res = await app.inject({
-      method: "POST",
-      url: "/jobs",
-      headers: authHeaders(),
-      payload: { queue: "emails", execution: { type: "http", url: "https://example.com/hook" } },
+      method: "DELETE",
+      url: "/queues/orders/messages/msg_123",
+      headers: { ...auth, "content-type": "application/json" },
     });
-    expect(res.statusCode).toBe(503);
-    expect(jsonBody<{ error: { code: string } }>(res).error.code).toBe("SERVICE_UNAVAILABLE");
-    expect(res.body).not.toContain("10.99.0.7");
-    expect(res.body).not.toContain("ECONNREFUSED");
-  });
-
-  it("maps unexpected backend failures to 500 without backend wording", async () => {
-    const app = await buildAppWithFailingBackend("unexpected");
-    const res = await app.inject({
-      method: "POST",
-      url: "/jobs",
-      headers: authHeaders(),
-      payload: { queue: "emails", execution: { type: "http", url: "https://example.com/hook" } },
-    });
-    expect(res.statusCode).toBe(500);
-    expect(jsonBody<{ error: { code: string } }>(res).error.code).toBe("INTERNAL_ERROR");
-    expect(res.body).not.toContain("Missing lock");
-    expect(res.body).not.toContain("clean job script");
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
   });
 });

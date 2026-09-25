@@ -1,130 +1,48 @@
 import { describe, expect, it } from "vitest";
-import { createJobSchema } from "../../src/api/schemas/jobs.js";
-import { upsertScheduleSchema } from "../../src/api/schemas/schedules.js";
+import {
+  consumeSchema,
+  leaseBodySchema,
+  publishMessageSchema,
+  setTtlSchema,
+} from "../../src/api/schemas/messages.js";
 
-const EXECUTION = { type: "http", url: "https://example.com/hook" } as const;
-
-describe("createJobSchema", () => {
-  it("accepts a minimal immediate job", () => {
-    const parsed = createJobSchema.parse({ queue: "emails", execution: EXECUTION });
-    expect(parsed.queue).toBe("emails");
-    expect(parsed.execution.type).toBe("http");
+describe("broker schemas", () => {
+  it("accepts a minimal publish body", () => {
+    expect(publishMessageSchema.safeParse({ data: { message: "hello" } }).success).toBe(true);
+    expect(
+      publishMessageSchema.safeParse({ id: "msg_123", data: [1, 2], ttlMs: 60000 }).success,
+    ).toBe(true);
   });
 
-  it("rejects the removed per-job network-policy override", () => {
-    expect(() =>
-      createJobSchema.parse({
-        queue: "emails",
-        execution: { ...EXECUTION, allowPrivateNetwork: true },
-      }),
-    ).toThrow();
-  });
-
-  it("accepts a fully-specified advanced job", () => {
-    const parsed = createJobSchema.parse({
-      queue: "emails",
-      name: "send",
-      payload: { to: "a@example.com" },
-      execution: {
-        type: "http",
-        url: "https://example.com/hook",
-        method: "POST",
-        headers: { "x-api-key": "secret" },
-        body: { hello: "world" },
-        timeoutMs: 5000,
-      },
-      delayMs: 1000,
-      attempts: 5,
-      backoff: { type: "exponential", delayMs: 1000 },
-      priority: 10,
-      lifo: true,
-      deduplication: { id: "dedup-1", ttlMs: 60_000, replace: true },
-      removeOnComplete: { count: 100 },
-      removeOnFail: { ageSeconds: 3600 },
-    });
-    expect(parsed.attempts).toBe(5);
-    expect(parsed.backoff).toEqual({ type: "exponential", delayMs: 1000 });
-  });
-
-  it("accepts debounce as an alternative to deduplication", () => {
-    const parsed = createJobSchema.parse({
-      queue: "q",
-      execution: EXECUTION,
-      debounce: { id: "d1", delayMs: 5000 },
-    });
-    expect(parsed.debounce?.id).toBe("d1");
-  });
-
-  it("rejects invalid input with useful errors", () => {
-    expect(() => createJobSchema.parse({ queue: "", execution: EXECUTION })).toThrow();
-    expect(() =>
-      createJobSchema.parse({
-        queue: "q",
-        execution: { type: "http", url: "ftp://example.com/x" },
-      }),
-    ).toThrow();
-    expect(() =>
-      createJobSchema.parse({
-        queue: "q",
-        execution: EXECUTION,
-        deduplication: { id: "a" },
-        debounce: { id: "b", delayMs: 1000 },
-      }),
-    ).toThrow(/deduplication or debounce/);
-    expect(() =>
-      createJobSchema.parse({
-        queue: "q",
-        execution: EXECUTION,
-        priority: 9_999_999,
-      }),
-    ).toThrow();
-    expect(() =>
-      createJobSchema.parse({
-        queue: "q",
-        execution: EXECUTION,
-        removeOnComplete: {},
-      }),
-    ).toThrow(/count or ageSeconds/);
-    expect(() =>
-      createJobSchema.parse({
-        queue: "q",
-        execution: { type: "http", url: "https://x.com", method: "BREW" },
-      }),
-    ).toThrow();
-  });
-});
-
-describe("upsertScheduleSchema", () => {
-  it("accepts a cron schedule and an interval schedule", () => {
-    const cron = upsertScheduleSchema.parse({
-      id: "nightly",
-      queue: "reports",
-      pattern: "0 2 * * *",
-      timezone: "Europe/Berlin",
-      execution: EXECUTION,
-    });
-    expect(cron.pattern).toBe("0 2 * * *");
-    const every = upsertScheduleSchema.parse({
-      id: "poll",
-      queue: "reports",
-      everyMs: 60_000,
-      execution: EXECUTION,
-    });
-    expect(every.everyMs).toBe(60_000);
-  });
-
-  it("requires exactly one of pattern or everyMs", () => {
-    expect(() => upsertScheduleSchema.parse({ id: "s", queue: "q", execution: EXECUTION })).toThrow(
-      /pattern.*everyMs/,
+  it("rejects publish bodies without data or with unknown fields", () => {
+    expect(publishMessageSchema.safeParse({}).success).toBe(false);
+    expect(publishMessageSchema.safeParse({ data: {}, execution: { type: "http" } }).success).toBe(
+      false,
     );
-    expect(() =>
-      upsertScheduleSchema.parse({
-        id: "s",
-        queue: "q",
-        pattern: "* * * * *",
-        everyMs: 1000,
-        execution: EXECUTION,
-      }),
-    ).toThrow(/pattern.*everyMs/);
+    expect(publishMessageSchema.safeParse({ data: {}, ttlMs: -1 }).success).toBe(false);
+  });
+
+  it("accepts consume options within bounds", () => {
+    const parsed = consumeSchema.safeParse({
+      consumerId: "worker-1",
+      count: 10,
+      visibilityTimeoutMs: 5000,
+      prefetch: 20,
+    });
+    expect(parsed.success).toBe(true);
+    expect(consumeSchema.safeParse({ count: 0 }).success).toBe(false);
+    expect(consumeSchema.safeParse({ prefetch: 0 }).success).toBe(false);
+  });
+
+  it("accepts TTL changes including zero (immediately available)", () => {
+    expect(setTtlSchema.safeParse({ ttl: 60000 }).success).toBe(true);
+    expect(setTtlSchema.safeParse({ ttl: 0 }).success).toBe(true);
+    expect(setTtlSchema.safeParse({}).success).toBe(false);
+    expect(setTtlSchema.safeParse({ ttl: -1 }).success).toBe(false);
+  });
+
+  it("accepts empty lease bodies", () => {
+    expect(leaseBodySchema.safeParse({}).success).toBe(true);
+    expect(leaseBodySchema.safeParse(undefined).success).toBe(false);
   });
 });

@@ -10,10 +10,6 @@ export interface ResolvedApiAuth {
   source: ApiTokenSource;
 }
 
-function servesApi(config: AppConfig): boolean {
-  return config.appRole === "api" || config.appRole === "both";
-}
-
 function withToken(config: AppConfig, apiToken: string): AppConfig {
   return { ...config, apiToken };
 }
@@ -27,14 +23,14 @@ function withToken(config: AppConfig, apiToken: string): AppConfig {
  *    while the Redis volume lives; unique per deployment — not a shared default)
  * 3. Generate a cryptographically random token on first start (SET NX)
  *
- * Worker-only roles and `AUTH_DISABLED=true` skip resolution.
+ * `AUTH_DISABLED=true` skips resolution (development only).
  */
 export async function resolveApiAuth(
   config: AppConfig,
   redis: Redis,
   logger?: Logger,
 ): Promise<ResolvedApiAuth> {
-  if (!servesApi(config) || config.authDisabled) {
+  if (config.authDisabled) {
     return { config, source: "disabled" };
   }
   if (config.apiToken !== undefined) {

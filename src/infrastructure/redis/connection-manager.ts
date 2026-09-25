@@ -34,14 +34,13 @@ export function waitForRedisReady(client: Redis, timeoutMs: number): Promise<voi
 /**
  * Owns every Redis connection easyMQ creates directly.
  *
- * BullMQ objects (Queue/Worker) manage their own connections
- * internally; this manager only tracks the client instances easyMQ itself
- * constructs (shared client + dedicated clients handed to BullMQ + the
- * catalog pub/sub clients) so shutdown can close them in order.
+ * A single shared client serves all broker commands (every mutation is
+ * one atomic Lua script, so no blocking commands are needed) plus the
+ * auth token, health checks, and the background sweeper.
  *
- * All clients use `maxRetriesPerRequest: null` as required by BullMQ
- * (blocking connections throw otherwise) and `enableOfflineQueue: false`
- * so failures surface instead of silently queuing.
+ * All clients use `maxRetriesPerRequest: null` and
+ * `enableOfflineQueue: false` so failures surface instead of silently
+ * queuing.
  */
 export class RedisConnectionManager {
   private readonly clients = new Set<Redis>();
@@ -65,7 +64,7 @@ export class RedisConnectionManager {
     };
   }
 
-  /** Shared client for lightweight commands (catalog, markers, pings). */
+  /** Shared client for broker commands, token storage, and health checks. */
   getShared(): Redis {
     if (!this.shared) {
       this.shared = new Redis(this.url, this.buildOptions());
@@ -77,46 +76,15 @@ export class RedisConnectionManager {
     return this.shared;
   }
 
-  /** Dedicated client (BullMQ Queue/Worker, pub/sub). */
-  createDedicated(label = "dedicated"): Redis {
-    const client = new Redis(this.url, {
-      ...this.buildOptions(),
-      connectionName: `easymq:${label}`,
-    });
-    client.on("error", (err: Error) => {
-      this.logger?.error({ err, event: "redis-error", connection: label }, "Redis error");
-    });
-    this.clients.add(client);
-    return client;
-  }
-
-  forget(client: Redis): void {
-    this.clients.delete(client);
-    if (this.shared === client) {
-      this.shared = undefined;
-    }
-  }
-
   /**
    * Wait until every tracked client is ready. Call once at startup so
-   * direct Redis use (registry, markers, health) never races connection
-   * setup. Throws a descriptive error when Redis is unreachable.
+   * direct Redis use never races connection setup. Throws a descriptive
+   * error when Redis is unreachable.
    */
   async waitUntilReady(timeoutMs = 15_000): Promise<void> {
     const clients = [...this.clients];
     try {
       await Promise.all(clients.map((client) => waitForRedisReady(client, timeoutMs)));
-    } catch (err) {
-      throw new Error(
-        `Redis is unreachable at ${this.url}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-
-  /** Wait until a single client is ready (for lazily-created subscribers). */
-  async waitForClient(client: Redis, timeoutMs = 15_000): Promise<void> {
-    try {
-      await waitForRedisReady(client, timeoutMs);
     } catch (err) {
       throw new Error(
         `Redis is unreachable at ${this.url}: ${err instanceof Error ? err.message : String(err)}`,

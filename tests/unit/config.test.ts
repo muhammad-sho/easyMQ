@@ -2,72 +2,60 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config/env.js";
 
 describe("loadConfig", () => {
-  it("applies documented defaults", () => {
-    const config = loadConfig({ AUTH_DISABLED: "true" });
+  it("applies broker defaults", () => {
+    const config = loadConfig({});
     expect(config.redisUrl).toBe("redis://127.0.0.1:6379");
     expect(config.redisKeyPrefix).toBe("easymq");
     expect(config.apiHost).toBe("0.0.0.0");
     expect(config.apiPort).toBe(3000);
-    expect(config.appRole).toBe("both");
-    expect(config.workerConcurrency).toBe(10);
-    expect(config.httpTimeoutMs).toBe(30_000);
-    expect(config.httpMaxResponseBytes).toBe(1_048_576);
-    expect(config.httpMaxRedirects).toBe(5);
-    expect(config.httpAllowPrivateNetwork).toBe(false);
-    expect(config.cancellationTtlSeconds).toBe(300);
-    expect(config.shutdownTimeoutMs).toBe(30_000);
+    expect(config.apiToken).toBeUndefined();
+    expect(config.authDisabled).toBe(false);
+    expect(config.defaultVisibilityTimeoutMs).toBe(30_000);
+    expect(config.defaultPrefetch).toBe(100);
+    expect(config.maxConsumeCount).toBe(100);
+    expect(config.sweeperIntervalMs).toBe(1000);
+    expect(config.maxMessageBytes).toBe(1_048_576);
     expect(config.logLevel).toBe("info");
-    expect(config.defaultAttempts).toBe(3);
-    expect(config.defaultBackoffType).toBe("exponential");
-    expect(config.defaultBackoffDelayMs).toBe(5000);
-    expect(config.defaultRemoveOnCompleteCount).toBe(1000);
-    expect(config.defaultRemoveOnFailCount).toBe(5000);
-    expect(config.pageDefaultLimit).toBe(50);
-    expect(config.pageMaxLimit).toBe(200);
+    expect(config.logPretty).toBe(false);
   });
 
-  it("parses numbers, booleans and enums from strings", () => {
+  it("overrides broker settings from the environment", () => {
     const config = loadConfig({
-      API_PORT: "8080",
-      APP_ROLE: "worker",
-      WORKER_CONCURRENCY: "4",
-      HTTP_ALLOW_PRIVATE_NETWORK: "yes",
+      REDIS_URL: "redis://redis:6379",
+      REDIS_KEY_PREFIX: "mq",
+      API_HOST: "127.0.0.1",
+      API_PORT: "4000",
+      API_TOKEN: "secret",
+      AUTH_DISABLED: "true",
+      DEFAULT_VISIBILITY_TIMEOUT_MS: "5000",
+      DEFAULT_PREFETCH: "5",
+      MAX_CONSUME_COUNT: "10",
+      SWEEPER_INTERVAL_MS: "250",
+      MAX_MESSAGE_BYTES: "4096",
       LOG_LEVEL: "debug",
-      DEFAULT_BACKOFF_TYPE: "fixed",
-      AUTH_DISABLED: "1",
+      LOG_PRETTY: "true",
     });
-    expect(config.apiPort).toBe(8080);
-    expect(config.appRole).toBe("worker");
-    expect(config.workerConcurrency).toBe(4);
-    expect(config.httpAllowPrivateNetwork).toBe(true);
+    expect(config.redisUrl).toBe("redis://redis:6379");
+    expect(config.apiPort).toBe(4000);
+    expect(config.apiToken).toBe("secret");
+    expect(config.authDisabled).toBe(true);
+    expect(config.defaultVisibilityTimeoutMs).toBe(5000);
+    expect(config.defaultPrefetch).toBe(5);
+    expect(config.maxConsumeCount).toBe(10);
+    expect(config.sweeperIntervalMs).toBe(250);
+    expect(config.maxMessageBytes).toBe(4096);
     expect(config.logLevel).toBe("debug");
-    expect(config.defaultBackoffType).toBe("fixed");
+    expect(config.logPretty).toBe(true);
   });
 
-  it("allows API role without API_TOKEN (resolved at startup)", () => {
-    // Zero-config: loadConfig does not require a token; buildSystem resolves
-    // a deployment-scoped token from Redis before serving the API.
-    expect(loadConfig({}).apiToken).toBeUndefined();
-    expect(loadConfig({ APP_ROLE: "api" }).apiToken).toBeUndefined();
-    expect(loadConfig({ APP_ROLE: "worker" }).apiToken).toBeUndefined();
-    expect(loadConfig({ API_TOKEN: "secret" }).apiToken).toBe("secret");
-    expect(loadConfig({ API_TOKEN: "" }).apiToken).toBeUndefined();
+  it("treats a blank API_TOKEN as unset", () => {
+    expect(loadConfig({ API_TOKEN: "   " }).apiToken).toBeUndefined();
   });
 
-  it("rejects invalid numbers, booleans and enums with clear errors", () => {
-    expect(() => loadConfig({ AUTH_DISABLED: "true", API_PORT: "abc" })).toThrow(/API_PORT/);
-    expect(() => loadConfig({ AUTH_DISABLED: "maybe" })).toThrow(/boolean/);
-    expect(() => loadConfig({ AUTH_DISABLED: "true", APP_ROLE: "nope" })).toThrow();
-    expect(() => loadConfig({ AUTH_DISABLED: "true", API_PORT: "-1" })).toThrow();
-  });
-
-  it("rejects inconsistent pagination defaults", () => {
-    expect(() =>
-      loadConfig({
-        AUTH_DISABLED: "true",
-        PAGE_DEFAULT_LIMIT: "100",
-        PAGE_MAX_LIMIT: "50",
-      }),
-    ).toThrow(/PAGE_DEFAULT_LIMIT/);
+  it("rejects invalid values with actionable messages", () => {
+    expect(() => loadConfig({ API_PORT: "99999" })).toThrow(/Invalid configuration/);
+    expect(() => loadConfig({ LOG_LEVEL: "verbose" })).toThrow(/Invalid configuration/);
+    expect(() => loadConfig({ DEFAULT_PREFETCH: "0" })).toThrow(/Invalid configuration/);
+    expect(() => loadConfig({ AUTH_DISABLED: "maybe" })).toThrow(/Invalid configuration/);
   });
 });

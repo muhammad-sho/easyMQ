@@ -38,47 +38,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       apiPort: parseNumberString(env["API_PORT"], 3000, "API_PORT"),
       apiToken: parseOptionalString(env["API_TOKEN"]),
       authDisabled: parseBooleanString(env["AUTH_DISABLED"], false),
-      appRole: env["APP_ROLE"]?.trim() || "both",
-      workerConcurrency: parseNumberString(env["WORKER_CONCURRENCY"], 10, "WORKER_CONCURRENCY"),
-      httpTimeoutMs: parseNumberString(env["HTTP_TIMEOUT_MS"], 30_000, "HTTP_TIMEOUT_MS"),
-      httpMaxResponseBytes: parseNumberString(
-        env["HTTP_MAX_RESPONSE_BYTES"],
-        1_048_576,
-        "HTTP_MAX_RESPONSE_BYTES",
-      ),
-      httpMaxRedirects: parseNumberString(env["HTTP_MAX_REDIRECTS"], 5, "HTTP_MAX_REDIRECTS"),
-      httpAllowPrivateNetwork: parseBooleanString(env["HTTP_ALLOW_PRIVATE_NETWORK"], false),
-      cancellationTtlSeconds: parseNumberString(
-        env["CANCELLATION_TTL_SECONDS"],
-        300,
-        "CANCELLATION_TTL_SECONDS",
-      ),
-      shutdownTimeoutMs: parseNumberString(
-        env["SHUTDOWN_TIMEOUT_MS"],
+      defaultVisibilityTimeoutMs: parseNumberString(
+        env["DEFAULT_VISIBILITY_TIMEOUT_MS"],
         30_000,
-        "SHUTDOWN_TIMEOUT_MS",
+        "DEFAULT_VISIBILITY_TIMEOUT_MS",
       ),
+      defaultPrefetch: parseNumberString(env["DEFAULT_PREFETCH"], 100, "DEFAULT_PREFETCH"),
+      maxConsumeCount: parseNumberString(env["MAX_CONSUME_COUNT"], 100, "MAX_CONSUME_COUNT"),
+      sweeperIntervalMs: parseNumberString(env["SWEEPER_INTERVAL_MS"], 1000, "SWEEPER_INTERVAL_MS"),
+      maxMessageBytes: parseNumberString(env["MAX_MESSAGE_BYTES"], 1_048_576, "MAX_MESSAGE_BYTES"),
       logLevel: env["LOG_LEVEL"]?.trim() || "info",
       logPretty: parseBooleanString(env["LOG_PRETTY"], false),
-      defaultAttempts: parseNumberString(env["DEFAULT_ATTEMPTS"], 3, "DEFAULT_ATTEMPTS"),
-      defaultBackoffType: env["DEFAULT_BACKOFF_TYPE"]?.trim() || "exponential",
-      defaultBackoffDelayMs: parseNumberString(
-        env["DEFAULT_BACKOFF_DELAY_MS"],
-        5000,
-        "DEFAULT_BACKOFF_DELAY_MS",
-      ),
-      defaultRemoveOnCompleteCount: parseNumberString(
-        env["DEFAULT_REMOVE_ON_COMPLETE_COUNT"],
-        1000,
-        "DEFAULT_REMOVE_ON_COMPLETE_COUNT",
-      ),
-      defaultRemoveOnFailCount: parseNumberString(
-        env["DEFAULT_REMOVE_ON_FAIL_COUNT"],
-        5000,
-        "DEFAULT_REMOVE_ON_FAIL_COUNT",
-      ),
-      pageDefaultLimit: parseNumberString(env["PAGE_DEFAULT_LIMIT"], 50, "PAGE_DEFAULT_LIMIT"),
-      pageMaxLimit: parseNumberString(env["PAGE_MAX_LIMIT"], 200, "PAGE_MAX_LIMIT"),
     };
   } catch (err) {
     throw new Error(`Invalid configuration: ${err instanceof Error ? err.message : String(err)}`);

@@ -4,23 +4,18 @@ import fastify, { type FastifyInstance, type FastifyTypeProviderDefault } from "
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { ApiError } from "./errors.js";
+import type { BrokerService } from "../broker/broker.js";
 import type { AppConfig } from "../config/schema.js";
 import type { Logger } from "../infrastructure/logging/logger.js";
 import type { HealthService } from "../health/health-service.js";
-import type { QueueService } from "../queues/queue-service.js";
-import type { JobService } from "../jobs/job-service.js";
-import type { ScheduleService } from "../jobs/schedule-service.js";
 import { registerHealthRoutes } from "./routes/health.js";
-import { registerJobRoutes } from "./routes/jobs.js";
+import { registerMessageRoutes } from "./routes/messages.js";
 import { registerQueueRoutes } from "./routes/queues.js";
-import { registerScheduleRoutes } from "./routes/schedules.js";
 
 export interface ApiServices {
   config: AppConfig;
   logger: Logger;
-  queueService: QueueService;
-  jobService: JobService;
-  scheduleService: ScheduleService;
+  broker: BrokerService;
   healthService: HealthService;
 }
 
@@ -54,7 +49,7 @@ function isAuthorized(
 
 /**
  * Build the Fastify application. Routes are thin: validation happens in
- * Zod schemas, business logic in application services.
+ * Zod schemas, business logic in the broker service.
  */
 export async function buildApp(services: ApiServices): Promise<AppInstance> {
   const { config, logger } = services;
@@ -91,12 +86,23 @@ export async function buildApp(services: ApiServices): Promise<AppInstance> {
       typeof (err as { statusCode?: unknown }).statusCode === "number"
         ? (err as { statusCode: number }).statusCode
         : 500;
+    const code =
+      typeof (err as { code?: unknown }).code === "string" &&
+      (err as { code: string }).code.startsWith("FST_ERR_CTP_")
+        ? "VALIDATION_ERROR"
+        : statusCode === 503
+          ? "SERVICE_UNAVAILABLE"
+          : "INTERNAL_ERROR";
     return reply
       .status(statusCode >= 400 && statusCode < 600 ? statusCode : 500)
       .send(
         new ApiError(
-          statusCode === 503 ? "SERVICE_UNAVAILABLE" : "INTERNAL_ERROR",
-          statusCode >= 500 ? "Internal server error." : "Request failed.",
+          code,
+          code === "VALIDATION_ERROR"
+            ? "Invalid request."
+            : statusCode >= 500
+              ? "Internal server error."
+              : "Request failed.",
         ).toBody(),
       );
   });
@@ -111,8 +117,7 @@ export async function buildApp(services: ApiServices): Promise<AppInstance> {
 
   registerHealthRoutes(app, services);
   registerQueueRoutes(app, services);
-  registerJobRoutes(app, services);
-  registerScheduleRoutes(app, services);
+  registerMessageRoutes(app, services);
 
   return app;
 }

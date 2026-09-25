@@ -1,4 +1,5 @@
 node_modules
+n8n-nodes-easymq
 dist
 coverage
 .git

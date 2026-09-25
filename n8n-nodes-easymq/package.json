@@ -1,0 +1,55 @@
+{
+  "name": "n8n-nodes-easymq",
+  "version": "0.1.0",
+  "description": "Native n8n community nodes for easyMQ — a lightweight, Redis-backed, RabbitMQ-like message broker.",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "easymq",
+    "message-queue",
+    "broker"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/muhammad-sho/easyMQ/tree/main/n8n-nodes-easymq",
+  "author": {
+    "name": "easyMQ contributors"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/muhammad-sho/easyMQ.git",
+    "directory": "n8n-nodes-easymq"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint credentials nodes index.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "dist/credentials/EasyMqApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/EasyMq/EasyMq.node.js",
+      "dist/nodes/EasyMqTrigger/EasyMqTrigger.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "^9.18.0",
+    "n8n-workflow": "^1.0.0",
+    "prettier": "^3.4.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.20.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  }
+}

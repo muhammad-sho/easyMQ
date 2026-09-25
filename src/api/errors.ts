@@ -1,17 +1,10 @@
-import type { EasyMQErrorCode } from "../jobs/job-types.js";
+import type { EasyMQErrorCode } from "../broker/types.js";
 
 const STATUS_BY_CODE: Record<EasyMQErrorCode, number> = {
   VALIDATION_ERROR: 400,
   UNAUTHENTICATED: 401,
   NOT_FOUND: 404,
   CONFLICT: 409,
-  JOB_NOT_ACTIVE: 409,
-  CANCELLED: 409,
-  EXECUTOR_ERROR: 500,
-  EXECUTOR_TIMEOUT: 504,
-  SSRF_BLOCKED: 500,
-  REDIRECT_LIMIT_EXCEEDED: 500,
-  RESPONSE_TOO_LARGE: 500,
   SERVICE_UNAVAILABLE: 503,
   INTERNAL_ERROR: 500,
 };
@@ -33,7 +26,7 @@ export interface ApiErrorBody {
 
 /**
  * Stable easyMQ API error. Services throw these; the Fastify error
- * handler translates them to HTTP responses. Raw BullMQ/Redis errors
+ * handler translates them to HTTP responses. Raw Redis errors
  * must never reach the public API contract.
  */
 export class ApiError extends Error {
@@ -82,12 +75,8 @@ export class ApiError extends Error {
     return new ApiError("VALIDATION_ERROR", message, { details });
   }
 
-  static conflict(
-    code: Extract<EasyMQErrorCode, "CONFLICT" | "JOB_NOT_ACTIVE" | "CANCELLED">,
-    message: string,
-    resource?: ApiErrorResource,
-  ): ApiError {
-    return new ApiError(code, message, { resource });
+  static conflict(message: string, resource?: ApiErrorResource): ApiError {
+    return new ApiError("CONFLICT", message, { resource });
   }
 
   static serviceUnavailable(message: string, cause?: unknown): ApiError {
@@ -142,7 +131,7 @@ const CONNECTION_MESSAGE_PATTERNS = [
 ];
 
 /**
- * True when the error means Redis/BullMQ could not be reached.
+ * True when the error means Redis could not be reached.
  * Used to map operational outages to SERVICE_UNAVAILABLE without
  * leaking backend wording, hosts, or Lua internals into the API.
  */
