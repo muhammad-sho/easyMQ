@@ -2,6 +2,7 @@ import type { AppInstance } from "../api/server.js";
 import { buildApp, type ApiServices } from "../api/server.js";
 import { BrokerService } from "../broker/broker.js";
 import { QueueSweeper } from "../broker/sweeper.js";
+import { SubscriptionManager } from "../broker/subscriptions.js";
 import { resolveApiAuth } from "../config/api-token.js";
 import type { AppConfig } from "../config/schema.js";
 import { HealthService } from "../health/health-service.js";
@@ -14,9 +15,10 @@ export interface BuiltSystem {
   connections: RedisConnectionManager;
   broker: BrokerService;
   sweeper: QueueSweeper;
+  subscriptions: SubscriptionManager;
   healthService: HealthService;
   fastifyApp: AppInstance;
-  /** Ordered shutdown: HTTP -> sweeper -> Redis. */
+  /** Ordered shutdown: HTTP -> sweeper -> subscriptions -> Redis. */
   close: () => Promise<void>;
 }
 
@@ -48,13 +50,15 @@ export async function buildSystem(input: AppConfig): Promise<BuiltSystem> {
     maxMessageBytes: config.maxMessageBytes,
   });
   const sweeper = new QueueSweeper(broker, config.sweeperIntervalMs, logger);
+  const subscriptions = new SubscriptionManager(broker, logger);
+  subscriptions.attach();
   const healthService = new HealthService(logger);
   healthService.addCheck({
     name: "redis",
     check: () => shared.ping().then(() => undefined),
   });
 
-  const services: ApiServices = { config, logger, broker, healthService };
+  const services: ApiServices = { config, logger, broker, healthService, subscriptions };
   const fastifyApp = await buildApp(services);
 
   async function close(): Promise<void> {
@@ -70,7 +74,13 @@ export async function buildSystem(input: AppConfig): Promise<BuiltSystem> {
     } catch (err) {
       logger.warn({ err }, "Error stopping queue sweeper");
     }
-    // 3. Release Redis connections.
+    // 3. Cancel persistent consumers (their pending messages requeue).
+    try {
+      await subscriptions.shutdown();
+    } catch (err) {
+      logger.warn({ err }, "Error shutting down subscriptions");
+    }
+    // 4. Release Redis connections.
     await connections.closeAll();
   }
 
@@ -80,6 +90,7 @@ export async function buildSystem(input: AppConfig): Promise<BuiltSystem> {
     connections,
     broker,
     sweeper,
+    subscriptions,
     healthService,
     fastifyApp,
     close,

@@ -56,6 +56,17 @@ export interface ConsumeOptions {
 
 type ScriptCaller = (...args: Array<string | number>) => Promise<unknown>;
 
+/**
+ * Listener for broker changes that may make messages available for
+ * delivery (publish, requeue, TTL change, consumer cancel, sweep).
+ * Persistent consumers (WebSocket subscriptions) use this to push
+ * messages immediately instead of polling.
+ */
+export type BrokerChangeHandler = (queue: string) => void;
+
+/** Listener for queue deletion so persistent consumers can close cleanly. */
+export type BrokerDeleteHandler = (queue: string) => void;
+
 function isMessageState(value: unknown): value is MessageState {
   return value === "ready" || value === "delayed" || value === "unacked";
 }
@@ -127,6 +138,8 @@ function parseMessageHash(record: Record<string, string>, queue: string): Broker
  */
 export class BrokerService {
   private readonly scripts = new Map<string, ScriptCaller>();
+  private readonly changeHandlers = new Set<BrokerChangeHandler>();
+  private readonly deleteHandlers = new Set<BrokerDeleteHandler>();
 
   constructor(
     private readonly redis: Redis,
@@ -159,6 +172,45 @@ export class BrokerService {
     const caller = this.scripts.get(name);
     if (!caller) throw ApiError.internal(`Script ${name} is not registered.`);
     return caller(...args);
+  }
+
+  /**
+   * Subscribe to availability changes for any queue. Returns an
+   * unsubscribe function. Listener failures never break the broker.
+   */
+  onChange(handler: BrokerChangeHandler): () => void {
+    this.changeHandlers.add(handler);
+    return () => {
+      this.changeHandlers.delete(handler);
+    };
+  }
+
+  /** Subscribe to queue deletions. Returns an unsubscribe function. */
+  onDeleteQueue(handler: BrokerDeleteHandler): () => void {
+    this.deleteHandlers.add(handler);
+    return () => {
+      this.deleteHandlers.delete(handler);
+    };
+  }
+
+  private notifyChanged(queue: string): void {
+    for (const handler of this.changeHandlers) {
+      try {
+        handler(queue);
+      } catch {
+        // ignore — listeners must never break broker mutations
+      }
+    }
+  }
+
+  private notifyDeleted(queue: string): void {
+    for (const handler of this.deleteHandlers) {
+      try {
+        handler(queue);
+      } catch {
+        // ignore — listeners must never break broker mutations
+      }
+    }
   }
 
   /** Idempotent queue declaration. */
@@ -310,6 +362,7 @@ export class BrokerService {
       for (const key of targets) pipeline.unlink(key);
       pipeline.srem(keys.registry, queue);
       await pipeline.exec();
+      this.notifyDeleted(queue);
     } catch (err) {
       throw classifyBackendError(err, "delete queue");
     }
@@ -358,6 +411,7 @@ export class BrokerService {
       }
       const state = asString(parts[1], "publish");
       if (!isMessageState(state)) throw ApiError.internal("Unexpected reply from publish.");
+      this.notifyChanged(queue);
       return { id, queue, state, availableAt, createdAt: now };
     }
     throw ApiError.internal("Failed to allocate a message id.");
@@ -471,7 +525,9 @@ export class BrokerService {
     } catch (err) {
       throw classifyBackendError(err, "requeue message");
     }
-    return { deliveries: this.settledLease(reply, "requeue", queue, id, "requeue") };
+    const deliveries = this.settledLease(reply, "requeue", queue, id, "requeue");
+    this.notifyChanged(queue);
+    return { deliveries };
   }
 
   private settledLease(
@@ -557,6 +613,7 @@ export class BrokerService {
     }
     const state = asString(parts[1], "setTtl");
     if (!isMessageState(state)) throw ApiError.internal("Unexpected reply from setTtl.");
+    this.notifyChanged(queue);
     return { state, availableAt };
   }
 
@@ -579,7 +636,9 @@ export class BrokerService {
       throw classifyBackendError(err, "cancel consumer");
     }
     const parts = asArray(reply, "cancelConsumer");
-    return { requeued: asNumber(parts[1], "cancelConsumer") };
+    const requeued = asNumber(parts[1], "cancelConsumer");
+    if (requeued > 0) this.notifyChanged(queue);
+    return { requeued };
   }
 
   /** Promote due + reclaim expired for one queue (used by the sweeper). */
@@ -597,10 +656,10 @@ export class BrokerService {
         keys.messagePrefix,
       ]);
       const parts = asArray(reply, "sweep");
-      return {
-        promoted: asNumber(parts[1], "sweep"),
-        reclaimed: asNumber(parts[2], "sweep"),
-      };
+      const promoted = asNumber(parts[1], "sweep");
+      const reclaimed = asNumber(parts[2], "sweep");
+      if (promoted + reclaimed > 0) this.notifyChanged(queue);
+      return { promoted, reclaimed };
     } catch (err) {
       throw classifyBackendError(err, "sweep queue");
     }

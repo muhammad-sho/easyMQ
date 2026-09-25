@@ -1,15 +1,23 @@
 # easyMQ
 
-**easyMQ** is a lightweight, simplified RabbitMQ-like message broker backed
-by Redis — plus exactly two extra message features: **deleting a queued
-message** and **changing/resetting a queued message's TTL**.
+**easyMQ is a lightweight Redis-backed message broker inspired by RabbitMQ's
+queue/consumer model.** Its purpose is to provide the useful simplicity of
+Redis together with the consumer-based processing model of RabbitMQ.
+
+Producers publish messages to named queues. Consumers attach to a queue and
+**messages are pushed to them** over a persistent connection — no polling.
+Consumers acknowledge each message when done; anything left unacknowledged
+is redelivered.
 
 ```text
 Producer
-   ↓
-Named Queue
-   ↓
-Multiple Consumers
+   │
+   ▼
+ Queue
+   │
+   ├── Consumer 1
+   ├── Consumer 2
+   └── Consumer 3
 ```
 
 A message is simply a message — an id plus arbitrary JSON data:
@@ -23,37 +31,122 @@ A message is simply a message — an id plus arbitrary JSON data:
 }
 ```
 
-There is no job abstraction, no executor, no webhook, no scheduler.
-Consumers decide what to do with messages. Redis is the only backend; its
-internals never leak into the API.
+Beyond the classic queue primitives, easyMQ adds exactly two distinctive
+capabilities:
 
-## Behavior
+- **Delete a specific queued message** before it is ever delivered.
+- **Change/reset a specific queued message's TTL** (delay or release it).
 
-RabbitMQ-like semantics, implemented atomically in Redis Lua scripts so any
-number of competing consumers can share a queue safely:
+There is no job abstraction, no executor, no webhook, no scheduler, no
+exchange/routing layer. Consumers decide what to do with messages. Redis is
+the only backend; its internals never leak into the API.
 
-- Named, durable queues (everything lives in Redis until acked/deleted)
-- Multiple consumers on the same queue, competing for messages (FIFO)
-- Consumer concurrency is client-side: poll in parallel
-- Prefetch: max messages leased to one consumer at once
-- Acknowledgement removes the message permanently
-- Unacknowledged messages: leased with a visibility timeout; past it, the
-  message is automatically redelivered (`deliveryCount` increments,
-  `redelivered: true`)
-- Explicit requeue returns a leased message to the ready tail
-- Consumer cancellation requeues that consumer's leases
-- Retry behavior = redelivery with `deliveryCount`/`redelivered` flags —
-  the consumer decides when to give up (ack, requeue, or delete)
+## Why easyMQ exists
 
-Two extra operations beyond classic queues:
+Full brokers like RabbitMQ are powerful but heavy to run and operate.
+Raw Redis lists are light but leave you to reinvent leases, redelivery,
+and consumer bookkeeping.
 
-- `DELETE /queues/{queue}/messages/{messageId}` — remove a message that is
-  still waiting (ready or delayed). Leased (unacked) messages conflict
-  (`409`) until acked or requeued.
-- `PUT /queues/{queue}/messages/{messageId}/ttl` — change/reset a waiting
-  message's TTL counted from the time of the call. When the TTL passes, the
-  message simply becomes available to consumers — it never triggers HTTP
-  requests, webhooks, or executors.
+easyMQ intentionally does **not** try to reproduce all of RabbitMQ. It
+focuses on a small set of queue/consumer primitives with Redis as the
+backend:
+
+- named, durable queues with competing consumers (FIFO)
+- leases with visibility timeouts and automatic redelivery
+- explicit acknowledge / requeue
+- consumer cancellation
+- persistent push subscriptions (WebSocket) — messages arrive instantly
+- plus message delete and TTL reset
+
+If you need exchanges, routing keys, clustering, or AMQP compatibility, use
+RabbitMQ. If you need a few dependable queue primitives in one container
+plus Redis, easyMQ is enough.
+
+## Concepts
+
+### Queues
+
+Named, durable, declared idempotently (`PUT /queues/{queue}`).
+Publishing to a missing queue declares it automatically. Everything about
+a queue lives in Redis until it is acked or deleted, so queues survive
+restarts. `GET /queues/{queue}` reports `ready` / `delayed` / `unacked`
+depths, per-consumer leases, and lifetime counters.
+
+### Messages
+
+An id plus arbitrary JSON data. Messages waiting for delivery are either
+**ready** (a FIFO list) or **delayed** (hidden until their TTL passes).
+Publishing accepts an optional `id` (generated when omitted; duplicates
+conflict) and an optional `ttlMs` delay before availability.
+
+### Consumers
+
+A consumer attaches to a queue with an identity (`consumerId`, generated
+when omitted) and a **prefetch**: the maximum number of messages leased to
+it at once. Multiple consumers on one queue compete for messages — each
+message goes to exactly one available consumer. Consumers scale by adding
+more consumer connections, each getting different messages.
+
+The primary consumption path is a **persistent WebSocket subscription**
+(`GET /queues/{queue}/subscribe`): the broker pushes each message the
+moment it becomes available. A plain HTTP `POST .../consume` call exists
+for scripts and one-shot clients.
+
+### Acknowledgements
+
+Delivery leases a message; acknowledgement removes it permanently.
+Settlement is per message:
+
+- **ack** — done, remove it.
+- **requeue** — reject it; it returns to the ready tail and is redelivered
+  with an incremented `deliveryCount` and `redelivered: true`.
+
+Only leased (`unacked`) messages can be settled — anything else is a
+`409 CONFLICT`. An optional owner check (`consumerId`) stops one consumer
+from settling another's leases.
+
+### Redelivery
+
+Every delivery carries a visibility timeout (lease). If the lease expires
+before the message is acked — the consumer crashed, was too slow, or its
+connection dropped — the message is automatically redelivered. Closing a
+persistent connection requeues its pending messages immediately, like a
+dropped RabbitMQ channel. Retry policy is the consumer's decision (ack,
+requeue, or delete) using the `deliveryCount` / `redelivered` flags.
+
+### TTL
+
+A message published with `ttlMs` (or moved via `PUT .../ttl`) waits in the
+delayed set until its time passes, then becomes available to consumers
+normally — it never triggers anything else. `ttl: 0` releases a message
+immediately. TTLs of leased messages conflict until the lease settles.
+
+### Message deletion
+
+`DELETE .../messages/{id}` removes a message that is still waiting (ready
+or delayed) so it is never delivered. Leased messages conflict until acked
+or requeued.
+
+### Message lifecycle
+
+```text
+Published
+   ↓
+Queued (ready … or delayed until its TTL passes)
+   ↓
+Delivered to consumer (leased with a visibility timeout)
+   ↓
+ ┌───────────────┐
+ │               │
+ACK            Reject (requeue)
+ │               │
+ ▼               ▼
+Removed        Requeued → redelivered
+```
+
+Unacked past the lease (or orphaned by a dropped connection), a message
+returns to the queue on its own. TTL behavior is separate: a TTL only
+controls *when* a waiting message becomes available.
 
 ## Quick start
 
@@ -100,145 +193,145 @@ npm install
 npm run dev                 # set API_TOKEN or AUTH_DISABLED=true as needed
 ```
 
-Publish and consume (dev, auth disabled):
+Publish and read back (dev, auth disabled):
 
 ```bash
 curl -s -X POST localhost:3000/queues/orders/messages \
   -H 'content-type: application/json' \
   -d '{"id":"msg_123","data":{"message":"hello"}}' | jq .
 
-curl -s -X POST localhost:3000/queues/orders/consume \
-  -H 'content-type: application/json' \
-  -d '{"consumerId":"worker-1","count":10}' | jq .
-
-curl -X POST localhost:3000/queues/orders/messages/msg_123/ack \
-  -H 'content-type: application/json' -d '{"consumerId":"worker-1"}'
+curl -H "Authorization: Bearer $TOKEN" localhost:3000/queues/orders/messages/msg_123 | jq .
 ```
 
-## API
+## Consuming
 
-Base URL: `http://host:port`. Errors look like
-`{"error":{"code":"NOT_FOUND","message":"...","resource":{...}}}` with stable
-`code` values (`VALIDATION_ERROR`, `UNAUTHENTICATED`, `NOT_FOUND`,
-`CONFLICT`, `SERVICE_UNAVAILABLE`, `INTERNAL_ERROR`). Backend failures are
-classified: invalid input → `400`, unreachable Redis → `503`, unexpected
-failures → `500`. Malformed JSON bodies map to `400 VALIDATION_ERROR`, never
-`INTERNAL_ERROR`.
+### Persistent subscriptions (recommended)
 
-### Queues
+Open `GET /queues/{queue}/subscribe` as a WebSocket with the usual
+`Authorization: Bearer <token>` header, send one hello frame, and receive
+a `message` frame for every delivery — instantly, with no polling:
 
-```bash
-curl -X PUT -H "Authorization: Bearer $TOKEN" localhost:3000/queues/orders
-curl -H "Authorization: Bearer $TOKEN" localhost:3000/queues
-curl -H "Authorization: Bearer $TOKEN" localhost:3000/queues/orders
-curl -X DELETE -H "Authorization: Bearer $TOKEN" localhost:3000/queues/orders
+```text
+EasyMQ Trigger
+      │
+      │ persistent connection
+      ▼
+   easyMQ
+      │
+      │ message arrives
+      ▼
+consumer runs immediately
 ```
 
-- `PUT /queues/{queue}` declares the queue (idempotent) and returns
-  `{queue, created}`.
-- `GET /queues` lists queues with ready/delayed/unacked depths.
-- `GET /queues/{queue}` returns depths, per-consumer leases, and lifetime
-  counters (`published`, `delivered`, `acked`, `requeued`, `deleted`).
-- `DELETE /queues/{queue}` removes the queue and every message in it
-  (`204`). Acks for its in-flight leases afterwards `404`.
-
-Publishing also auto-declares the queue.
-
-### Messages
-
-Publish (optional `id`, optional `ttlMs` delay before availability):
-
-```bash
-curl -s -X POST localhost:3000/queues/orders/messages \
-  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"data":{"message":"hello"},"ttlMs":60000}'
+```jsonc
+// → { "action": "hello", "consumerId": "worker-1", "prefetch": 10,
+//     "visibilityTimeoutMs": 30000 }
+// ← { "type": "ready", "queue": "orders", "consumerId": "worker-1", ... }
+// ← { "type": "message", "queue": "orders", "id": "msg_123",
+//     "data": {...}, "deliveryCount": 1, "redelivered": false, ... }
+// → { "action": "ack", "id": "msg_123" }
+// ← { "type": "acked", "id": "msg_123", "deliveries": 1 }
 ```
 
-Response (`201`): `{id, queue, state, availableAt, createdAt,
-deliveryCount: 0}`. A duplicate `id` returns `409 CONFLICT`. Payloads over
-`MAX_MESSAGE_BYTES` return `400`.
+Settle with `ack` / `requeue` frames, end the consumer with `cancel` or by
+closing the socket. A dropped socket requeues its pending messages, so
+unacknowledged work is redelivered. The full frame protocol is documented
+in [docs/API.md](docs/API.md#subscribe-websocket).
 
-Inspect:
+### One-shot HTTP consume
 
-```bash
-curl -H "Authorization: Bearer $TOKEN" localhost:3000/queues/orders/messages/msg_123
+`POST /queues/{queue}/consume` leases up to `count` waiting messages for
+scripts, tests, and clients that cannot hold a socket open. It shares the
+exact same atomic lease path as subscriptions — one implementation, two
+transports.
+
+## n8n integration
+
+Native community nodes live in [`n8n-nodes-easymq/`](n8n-nodes-easymq/) and
+behave like n8n's RabbitMQ nodes: the trigger holds a persistent consumer
+connection and every message starts an execution immediately.
+
+Install in n8n via **Settings → Community Nodes → Install** with
+`n8n-nodes-easymq` (or `npm install n8n-nodes-easymq` in `~/.n8n`), then add
+an **EasyMQ API** credential (Base URL + API Token). See the
+[subproject README](n8n-nodes-easymq/README.md).
+
+### EasyMQ Trigger
+
+```text
+Credentials
+Queue
+
+Options
+  + Acknowledge (Immediately / Execution Finishes /
+    Execution Finishes Successfully / Specified Later in Workflow)
+  + Max Concurrent Executions
+  + Visibility Timeout (Ms)
+  + Consumer ID
 ```
 
-### Consuming
+- **Event-driven, never polling.** The trigger consumes over a persistent
+  connection; canceling/deactivating the workflow closes it and requeues
+  pending messages for redelivery.
+- **Acknowledge modes** mirror the RabbitMQ Trigger: `Immediately` acks on
+  delivery; `Execution Finishes` acks when the run ends (success or
+  failure); `Execution Finishes Successfully` requeues on failure;
+  `Specified Later in Workflow` leaves settlement to an EasyMQ node.
+- **Max Concurrent Executions** caps how many trigger executions process at
+  once (the RabbitMQ Trigger calls this Parallel Message Processing
+  Limit). Flow control stays internal — there is no user-facing prefetch.
+- Each output item carries everything a later node needs: `queue`,
+  `messageId`, `consumerId`, `data`, `deliveryCount`, `redelivered`.
 
-```bash
-curl -s -X POST localhost:3000/queues/orders/consume \
-  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"consumerId":"worker-1","count":10,"visibilityTimeoutMs":30000,"prefetch":100}' | jq .
+### EasyMQ node
+
+Simple operations, no raw API details:
+
+```text
+Publish · Acknowledge · Requeue · Delete · Set TTL · Get
 ```
 
-Response: `{consumerId, messages: [{id, data, deliveryCount, redelivered,
-visibleAt}]}`. Consuming an unknown queue returns `404` — declare (or
-publish) first.
+plus queue declare/stats/list/delete. Acknowledge-family fields default to
+the trigger item (`={{ $json.messageId }}` …), so this needs no manual IDs:
 
-- `consumerId` (optional, generated when empty) identifies the lease owner
-  for prefetch accounting, ack ownership checks, and cancellation.
-- `count` (default 1, capped by `MAX_CONSUME_COUNT`) bounds this call.
-- `visibilityTimeoutMs` (default `DEFAULT_VISIBILITY_TIMEOUT_MS`) is the
-  per-message lease: ack within it, or the message is redelivered.
-- `prefetch` (default `DEFAULT_PREFETCH`) caps the consumer's outstanding
-  leases; a consumer at its cap receives zero messages until it acks.
-- Competing consumers each get different messages; delivery is FIFO.
-
-### Acknowledge / requeue
-
-```bash
-curl -X POST localhost:3000/queues/orders/messages/msg_123/ack \
-  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"consumerId":"worker-1"}'
-
-curl -X POST localhost:3000/queues/orders/messages/msg_123/requeue \
-  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"consumerId":"worker-1"}'
+```text
+EasyMQ Trigger
+      ↓
+   Process
+      ↓
+EasyMQ → Acknowledge
 ```
 
-- Ack removes the message permanently (`{acked: true, deliveries}`).
-- Requeue returns a leased message to the ready tail
-  (`{requeued: true, state: "ready", deliveries}`); the next delivery has
-  an incremented `deliveryCount` and `redelivered: true`.
-- Only leased (`unacked`) messages can be acked/requeued — otherwise `409`.
-  A mismatched `consumerId` also returns `409`.
-- `consumerId` is optional; supply it to stop one consumer from settling
-  another's leases.
+or, with automatic acknowledgement, just:
 
-### Delete a queued message
-
-```bash
-curl -X DELETE -H "Authorization: Bearer $TOKEN" \
-  localhost:3000/queues/orders/messages/msg_123
+```text
+EasyMQ Trigger (Acknowledge: Execution Finishes Successfully)
+      ↓
+   Process
 ```
 
-Removes the message if it is still waiting (`204`). Missing messages `404`;
-leased messages `409` (ack or requeue first).
+## API overview
 
-### Change/reset a message TTL
+Base URL: `http://host:port`. Every route except the health probes needs
+`Authorization: Bearer <API_TOKEN>`.
 
-```bash
-curl -X PUT localhost:3000/queues/orders/messages/msg_123/ttl \
-  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"ttl":60000}'
-```
+| Area | Routes |
+| --- | --- |
+| Queues | `PUT /queues/{queue}` · `GET /queues` · `GET /queues/{queue}` · `DELETE /queues/{queue}` |
+| Messages | `POST /queues/{queue}/messages` · `GET .../messages/{id}` · `DELETE .../messages/{id}` · `PUT .../messages/{id}/ttl` |
+| Consuming | `POST /queues/{queue}/consume` · `GET /queues/{queue}/subscribe` (WebSocket) |
+| Settlement | `POST .../messages/{id}/ack` · `POST .../messages/{id}/requeue` · `POST .../consumers/{id}/cancel` |
+| Health | `GET /health/live` · `GET /health/ready` (unauthenticated) |
 
-Sets availability to now + `ttl` ms and moves the message between ready and
-delayed accordingly (`{id, queue, state, availableAt}`). `0` makes it
-available immediately. When the TTL passes, the message is delivered to
-consumers normally — nothing else happens. Missing messages `404`; leased
-messages `409`.
+Errors are stable `{error: {code, message, resource?}}` bodies: invalid
+input → `400 VALIDATION_ERROR`, bad token → `401 UNAUTHENTICATED`,
+missing queue/message → `404 NOT_FOUND`, settling a message that is not
+leased (or owned by someone else) → `409 CONFLICT`, unreachable Redis →
+`503 SERVICE_UNAVAILABLE`.
 
-### Cancel a consumer
-
-```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  localhost:3000/queues/orders/consumers/worker-1/cancel
-```
-
-Requeues all of that consumer's leased messages (`{cancelled: true,
-requeued}`); idempotent.
+The complete reference — authentication, every endpoint, the WebSocket
+frame protocol, message format, and errors — lives in
+**[docs/API.md](docs/API.md)**.
 
 ## Authentication
 
@@ -370,7 +463,8 @@ echo 'vm.overcommit_memory = 1' | sudo tee /etc/sysctl.d/99-redis.conf
 1. Prefer the managed token from logs or set a strong `API_TOKEN` (never
    `AUTH_DISABLED=true`).
 2. Run N API containers behind your load balancer; keep Redis private with
-   persistence enabled. Consumers scale by polling in parallel.
+   persistence enabled. Consumers scale by adding persistent subscriptions
+   (each gets different messages); keep per-consumer prefetch bounded.
 3. Tune `DEFAULT_VISIBILITY_TIMEOUT_MS` (keep it above your consumer's
    processing time), `DEFAULT_PREFETCH`, and `SWEEPER_INTERVAL_MS` to your
    workload.
@@ -380,24 +474,9 @@ echo 'vm.overcommit_memory = 1' | sudo tee /etc/sysctl.d/99-redis.conf
 ## Graceful shutdown
 
 On `SIGTERM`/`SIGINT`: stop accepting HTTP requests → stop the background
-sweeper → release Redis connections → exit. Leases live in Redis, so
-in-flight messages are redelivered after their visibility timeout.
-
-## n8n integration
-
-Native community nodes live in [`n8n-nodes-easymq/`](n8n-nodes-easymq/) —
-independently publishable/installable, speaking only to the HTTP API above:
-
-- **EasyMQ** node: publish, consume, get, acknowledge, requeue, delete,
-  set TTL, plus queue declare/stats/list/delete.
-- **EasyMQ Trigger** node: pick a queue, poll on a schedule, configure
-  batch size / consumer id / prefetch / visibility timeout, with auto or
-  manual acknowledgement.
-
-Install in n8n via **Settings → Community Nodes → Install** with
-`n8n-nodes-easymq` (or `npm install n8n-nodes-easymq` in `~/.n8n`), then add
-an **EasyMQ API** credential (Base URL + API Token). See the
-[subproject README](n8n-nodes-easymq/README.md).
+sweeper → cancel persistent consumers (their pending messages requeue) →
+release Redis connections → exit. Leases live in Redis, so in-flight
+messages are redelivered after their visibility timeout.
 
 ## Development
 
@@ -416,7 +495,7 @@ npm run format     # prettier
 ```bash
 npm test                    # all tests (needs Redis on 127.0.0.1:6379)
 npm run test:unit           # config, ids, schemas, routes (mocked broker)
-npm run test:integration    # real Redis: broker flows + HTTP API
+npm run test:integration    # real Redis: broker flows + HTTP API + WebSocket
 REDIS_URL=redis://host:6379 npm run test:integration
 ```
 
@@ -426,17 +505,17 @@ interfere.
 ### Architecture
 
 ```text
-                 ┌──────────────┐
-                 │  easyMQ API  │ × N (stateless, share one Redis)
-                 └──────┬───────┘
-                        │  Lua scripts (atomic consume/ack/requeue/...)
-                        ▼
-                 ┌──────────────────────────┐
-                 │        Redis × 1         │
-                 │ (ready lists, delayed +  │
-                 │  unacked ZSETs, message   │
-                 │  hashes, queue registry)  │
-                 └──────────────────────────┘
+                  ┌──────────────┐
+                  │  easyMQ API  │ × N (stateless, share one Redis)
+                  └──────┬───────┘
+                         │  Lua scripts (atomic consume/ack/requeue/...)
+                         ▼
+                  ┌──────────────────────────┐
+                  │        Redis × 1         │
+                  │ (ready lists, delayed +  │
+                  │  unacked ZSETs, message   │
+                  │  hashes, queue registry)  │
+                  └──────────────────────────┘
 ```
 
 Per queue: a FIFO `ready` list, a `delayed` sorted set (TTL/availableAt),
@@ -445,3 +524,8 @@ consumer registry with per-consumer pending sets for prefetch and
 cancellation. A lightweight background sweeper (one interval, bounded Lua
 per queue) promotes due messages and reclaims expired leases; consume calls
 also settle both inline, so behavior never depends on sweep timing.
+
+A `SubscriptionManager` reacts to broker change notifications (publish,
+requeue, TTL change, cancel, sweep movement) and fills persistent
+consumers through the same atomic consume path — one lease implementation,
+two transports (WebSocket push, HTTP pull).

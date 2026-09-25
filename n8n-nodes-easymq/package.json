@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-easymq",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Native n8n community nodes for easyMQ — a lightweight, Redis-backed, RabbitMQ-like message broker.",
   "keywords": [
     "n8n-community-node-package",
@@ -43,6 +43,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
     "eslint": "^9.18.0",
     "n8n-workflow": "^1.0.0",
     "prettier": "^3.4.0",
@@ -51,5 +52,8 @@
   },
   "peerDependencies": {
     "n8n-workflow": "*"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
   }
 }

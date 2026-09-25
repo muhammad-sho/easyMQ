@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppInstance, ApiServices } from "../../src/api/server.js";
 import { buildApp } from "../../src/api/server.js";
 import type { BrokerService } from "../../src/broker/broker.js";
+import { SubscriptionManager } from "../../src/broker/subscriptions.js";
 import { loadConfig } from "../../src/config/env.js";
 import { HealthService } from "../../src/health/health-service.js";
 import { createLogger } from "../../src/infrastructure/logging/logger.js";
@@ -12,7 +13,8 @@ async function buildTestApp(broker: BrokerService): Promise<AppInstance> {
   const config = loadConfig({ API_TOKEN: TOKEN });
   const logger = createLogger({ level: "silent" });
   const healthService = new HealthService(logger);
-  const services: ApiServices = { config, logger, broker, healthService };
+  const subscriptions = new SubscriptionManager(broker, logger);
+  const services: ApiServices = { config, logger, broker, healthService, subscriptions };
   const app = await buildApp(services);
   await app.ready();
   return app;
@@ -93,6 +95,8 @@ function mockBroker(): BrokerService {
       .mockImplementation((_queue: string, _consumerId: string) =>
         Promise.resolve({ requeued: 2 }),
       ),
+    onChange: vi.fn().mockReturnValue(() => {}),
+    onDeleteQueue: vi.fn().mockReturnValue(() => {}),
   } as unknown as BrokerService;
 }
 

@@ -5,6 +5,7 @@ import { buildSystem, type BuiltSystem } from "./build-app.js";
  * Start the broker and wait for SIGTERM/SIGINT.
  *
  * Shutdown order: stop HTTP -> stop the background sweeper ->
+ * cancel persistent consumers (pending messages requeue) ->
  * release Redis connections -> exit. Unacked messages keep their
  * visibility deadlines in Redis, so redelivery survives restarts
  * with no custom recovery.

@@ -3,20 +3,24 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import fastify, { type FastifyInstance, type FastifyTypeProviderDefault } from "fastify";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
+import websocket from "@fastify/websocket";
 import { ApiError } from "./errors.js";
 import type { BrokerService } from "../broker/broker.js";
+import type { SubscriptionManager } from "../broker/subscriptions.js";
 import type { AppConfig } from "../config/schema.js";
 import type { Logger } from "../infrastructure/logging/logger.js";
 import type { HealthService } from "../health/health-service.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerMessageRoutes } from "./routes/messages.js";
 import { registerQueueRoutes } from "./routes/queues.js";
+import { registerSubscribeRoutes } from "./routes/subscribe.js";
 
 export interface ApiServices {
   config: AppConfig;
   logger: Logger;
   broker: BrokerService;
   healthService: HealthService;
+  subscriptions: SubscriptionManager;
 }
 
 /** Fastify instance type bound to the pino logger easyMQ uses. */
@@ -58,6 +62,7 @@ export async function buildApp(services: ApiServices): Promise<AppInstance> {
 
   await app.register(helmet);
   await app.register(rateLimit, { max: 1000, timeWindow: "1 minute" });
+  await app.register(websocket);
 
   app.addHook("onRequest", async (request, reply) => {
     if (!isAuthorized(request, config)) {
@@ -118,6 +123,7 @@ export async function buildApp(services: ApiServices): Promise<AppInstance> {
   registerHealthRoutes(app, services);
   registerQueueRoutes(app, services);
   registerMessageRoutes(app, services);
+  registerSubscribeRoutes(app, services);
 
   return app;
 }

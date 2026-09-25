@@ -24,28 +24,6 @@ function numParam(value: NodeParameterValueType | object, fallback: number): num
   return typeof value === "number" ? value : fallback;
 }
 
-interface EasyMqMessageItem {
-  id: string;
-  queue: string;
-  data: unknown;
-  deliveryCount: number;
-  redelivered: boolean;
-  visibleAt: number;
-}
-
-function toMessageItem(queue: string, message: Record<string, unknown>): INodeExecutionData {
-  return {
-    json: toDataObject({
-      id: message["id"],
-      queue,
-      data: message["data"],
-      deliveryCount: message["deliveryCount"],
-      redelivered: message["redelivered"],
-      visibleAt: message["visibleAt"],
-    }),
-  };
-}
-
 export class EasyMq implements INodeType {
   description: INodeTypeDescription = {
     displayName: "EasyMQ",
@@ -92,33 +70,22 @@ export class EasyMq implements INodeType {
             action: "Publish a message",
           },
           {
-            name: "Consume",
-            value: "consume",
-            description: "Consume waiting messages (competing-consumer poll)",
-            action: "Consume messages",
-          },
-          {
-            name: "Get",
-            value: "get",
-            description: "Inspect a single message",
-            action: "Get a message",
-          },
-          {
             name: "Acknowledge",
             value: "ack",
-            description: "Acknowledge a consumed message",
+            description:
+              "Acknowledge a message delivered by the EasyMQ Trigger (also resolves a waiting 'Specified Later in Workflow' trigger)",
             action: "Acknowledge a message",
           },
           {
             name: "Requeue",
             value: "requeue",
-            description: "Return a consumed message to the queue",
+            description: "Reject a message and return it to the queue for redelivery",
             action: "Requeue a message",
           },
           {
             name: "Delete",
             value: "delete",
-            description: "Delete a waiting (queued) message",
+            description: "Delete a waiting (queued) message so it is never delivered",
             action: "Delete a message",
           },
           {
@@ -126,6 +93,12 @@ export class EasyMq implements INodeType {
             value: "setTtl",
             description: "Change/reset a waiting message's TTL",
             action: "Set a message TTL",
+          },
+          {
+            name: "Get",
+            value: "get",
+            description: "Inspect a single message",
+            action: "Get a message",
           },
         ],
         default: "publish",
@@ -176,6 +149,19 @@ export class EasyMq implements INodeType {
         description: "Name of the queue",
       },
       {
+        displayName: "Queue",
+        name: "triggerQueue",
+        type: "string",
+        // Picks up the queue straight from an EasyMQ Trigger output item,
+        // so Acknowledge-family operations need no manual wiring.
+        default: "={{ $json.queue }}",
+        required: true,
+        displayOptions: {
+          show: { resource: ["message"], operation: ["ack", "requeue", "delete", "setTtl", "get"] },
+        },
+        description: "Name of the queue (taken from the trigger item when connected)",
+      },
+      {
         displayName: "Message Data",
         name: "messageData",
         type: "json",
@@ -188,11 +174,12 @@ export class EasyMq implements INodeType {
         displayName: "Message ID",
         name: "messageId",
         type: "string",
-        default: "",
+        // Picks up the id straight from an EasyMQ Trigger output item.
+        default: "={{ $json.messageId }}",
         displayOptions: {
           show: { resource: ["message"], operation: ["get", "ack", "requeue", "delete", "setTtl"] },
         },
-        description: "Unique id of the message (returned by publish/consume)",
+        description: "Unique id of the message (taken from the trigger item when connected)",
         required: true,
       },
       {
@@ -224,36 +211,13 @@ export class EasyMq implements INodeType {
         displayName: "Consumer ID",
         name: "consumerId",
         type: "string",
-        default: "",
+        // Picks up the consumer straight from an EasyMQ Trigger output item.
+        default: "={{ $json.consumerId }}",
         displayOptions: {
-          show: { resource: ["message"], operation: ["consume", "ack", "requeue"] },
+          show: { resource: ["message"], operation: ["ack", "requeue"] },
         },
         description:
-          "Consumer identity for leases and prefetch (generated when empty; required to ack another call's messages reliably)",
-      },
-      {
-        displayName: "Max Messages",
-        name: "count",
-        type: "number",
-        default: 1,
-        displayOptions: { show: { resource: ["message"], operation: ["consume"] } },
-        description: "Max messages to return in this call",
-      },
-      {
-        displayName: "Visibility Timeout (Ms)",
-        name: "visibilityTimeoutMs",
-        type: "number",
-        default: 30000,
-        displayOptions: { show: { resource: ["message"], operation: ["consume"] } },
-        description: "Lease per message: unacked past this timeout the message is redelivered",
-      },
-      {
-        displayName: "Prefetch",
-        name: "prefetch",
-        type: "number",
-        default: 100,
-        displayOptions: { show: { resource: ["message"], operation: ["consume"] } },
-        description: "Max messages leased to this consumer at once",
+          "Consumer holding the lease — required to settle another consumer's message reliably (taken from the trigger item when connected)",
       },
     ],
   };
@@ -294,8 +258,8 @@ export class EasyMq implements INodeType {
           continue;
         }
 
-        const queue = strParam(this.getNodeParameter("queue", i, ""));
         if (operation === "publish") {
+          const queue = strParam(this.getNodeParameter("queue", i, ""));
           const dataParam: unknown = this.getNodeParameter("messageData", i);
           const data: unknown =
             typeof dataParam === "string" ? (JSON.parse(dataParam) as unknown) : dataParam;
@@ -312,32 +276,14 @@ export class EasyMq implements INodeType {
             i,
           );
           returnData.push({ json: toDataObject(response) });
-        } else if (operation === "consume") {
-          const consumerId = strParam(this.getNodeParameter("consumerId", i, "")).trim();
-          const body: Record<string, unknown> = {
-            count: numParam(this.getNodeParameter("count", i, 1), 1),
-            visibilityTimeoutMs: numParam(
-              this.getNodeParameter("visibilityTimeoutMs", i, 30000),
-              30000,
-            ),
-            prefetch: numParam(this.getNodeParameter("prefetch", i, 100), 100),
-          };
-          if (consumerId !== "") body["consumerId"] = consumerId;
-          const response = toDataObject(
-            await request.call(this, "POST", `/queues/${encode(queue)}/consume`, body, i),
-          );
-          const messages = toMessageList(response["messages"]);
-          const owner = typeof response["consumerId"] === "string" ? response["consumerId"] : "";
-          for (const message of messages) {
-            returnData.push(toMessageItem(queue, message));
-          }
-          if (messages.length === 0) {
-            returnData.push({
-              json: { queue, consumerId: owner, messages: [] },
-            });
-          }
-        } else if (operation === "get") {
-          const messageId = strParam(this.getNodeParameter("messageId", i));
+          continue;
+        }
+
+        // Acknowledge-family operations work on trigger output items: queue,
+        // message id, and consumer default to the trigger item fields.
+        const queue = strParam(this.getNodeParameter("triggerQueue", i, ""));
+        const messageId = strParam(this.getNodeParameter("messageId", i));
+        if (operation === "get") {
           const response = await request.call(
             this,
             "GET",
@@ -347,20 +293,37 @@ export class EasyMq implements INodeType {
           );
           returnData.push({ json: toDataObject(response) });
         } else if (operation === "ack" || operation === "requeue") {
-          const messageId = strParam(this.getNodeParameter("messageId", i));
           const consumerId = strParam(this.getNodeParameter("consumerId", i, "")).trim();
           const body: Record<string, unknown> = {};
           if (consumerId !== "") body["consumerId"] = consumerId;
-          const response = await request.call(
-            this,
-            "POST",
-            `/queues/${encode(queue)}/messages/${encode(messageId)}/${operation}`,
-            body,
-            i,
+          const response = toDataObject(
+            await request.call(
+              this,
+              "POST",
+              `/queues/${encode(queue)}/messages/${encode(messageId)}/${operation}`,
+              body,
+              i,
+            ),
           );
-          returnData.push({ json: toDataObject(response) });
+          if (operation === "ack") {
+            // Resolve a waiting "Specified Later in Workflow" trigger fast.
+            // Best-effort: without a waiting trigger there is nothing to
+            // resolve, and the HTTP acknowledgement above already settled.
+            try {
+              this.sendResponse({ ...items[i]?.json, acknowledged: true });
+            } catch {
+              // ignore — standalone acknowledgement already succeeded
+            }
+          }
+          returnData.push({
+            json: {
+              queue,
+              messageId,
+              [operation === "ack" ? "acked" : "requeued"]: true,
+              ...response,
+            },
+          });
         } else if (operation === "delete") {
-          const messageId = strParam(this.getNodeParameter("messageId", i));
           await request.call(
             this,
             "DELETE",
@@ -368,9 +331,8 @@ export class EasyMq implements INodeType {
             undefined,
             i,
           );
-          returnData.push({ json: { queue, id: messageId, deleted: true } });
+          returnData.push({ json: { queue, messageId, deleted: true } });
         } else if (operation === "setTtl") {
-          const messageId = strParam(this.getNodeParameter("messageId", i));
           const ttl = numParam(this.getNodeParameter("ttl", i), 0);
           const response = await request.call(
             this,
@@ -398,13 +360,6 @@ export class EasyMq implements INodeType {
     }
     return [returnData];
   }
-}
-
-function toMessageList(value: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter(
-    (entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null,
-  );
 }
 
 function encode(value: string): string {
@@ -455,5 +410,3 @@ function describeApiError(error: unknown): string {
   }
   return "easyMQ request failed.";
 }
-
-export type { EasyMqMessageItem };
