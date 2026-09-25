@@ -11,8 +11,6 @@ export const publishMessageSchema = z
   })
   .strict();
 
-export type PublishMessageInput = z.infer<typeof publishMessageSchema>;
-
 /** Consume body: competing-consumer poll with lease + prefetch control. */
 export const consumeSchema = z
   .object({
@@ -26,8 +24,6 @@ export const consumeSchema = z
   })
   .strict();
 
-export type ConsumeInput = z.infer<typeof consumeSchema>;
-
 /** Optional owner check for ack/requeue (prevents acking another consumer's lease). */
 export const leaseBodySchema = z
   .object({
@@ -35,13 +31,9 @@ export const leaseBodySchema = z
   })
   .strict();
 
-export type LeaseBodyInput = z.infer<typeof leaseBodySchema>;
-
 /** Change/reset a waiting message's TTL (ms from now; 0 = immediately available). */
 export const setTtlSchema = z
   .object({
     ttl: z.number().int().min(0).max(2_592_000_000),
   })
   .strict();
-
-export type SetTtlInput = z.infer<typeof setTtlSchema>;

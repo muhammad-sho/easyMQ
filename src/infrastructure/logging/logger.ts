@@ -54,12 +54,4 @@ export function createLogger(options: CreateLoggerOptions = {}): Logger {
   );
 }
 
-/** Create a child logger carrying queue/message context. */
-export function childLogger(
-  log: Logger,
-  bindings: Record<string, string | number | boolean>,
-): Logger {
-  return log.child(bindings);
-}
-
 export type { Logger };

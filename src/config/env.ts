@@ -1,4 +1,3 @@
-import { z } from "zod";
 import { configSchema, type AppConfig } from "./schema.js";
 
 function parseBooleanString(value: string | undefined, defaultValue: boolean): boolean {
@@ -67,5 +66,4 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return result.data;
 }
 
-export { z };
 export type { AppConfig };

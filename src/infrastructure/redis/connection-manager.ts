@@ -129,8 +129,4 @@ export class RedisConnectionManager {
       }
     }
   }
-
-  get size(): number {
-    return this.clients.size;
-  }
 }

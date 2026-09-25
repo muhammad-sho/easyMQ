@@ -75,10 +75,6 @@ export class ApiError extends Error {
     return new ApiError("VALIDATION_ERROR", message, { details });
   }
 
-  static conflict(message: string, resource?: ApiErrorResource): ApiError {
-    return new ApiError("CONFLICT", message, { resource });
-  }
-
   static serviceUnavailable(message: string, cause?: unknown): ApiError {
     return new ApiError("SERVICE_UNAVAILABLE", message, { cause });
   }
@@ -86,16 +82,6 @@ export class ApiError extends Error {
   static internal(message: string, cause?: unknown): ApiError {
     return new ApiError("INTERNAL_ERROR", message, { cause });
   }
-}
-
-/** Map any thrown value to an ApiError (never leak internals). */
-export function toApiError(err: unknown): ApiError {
-  if (err instanceof ApiError) return err;
-  return ApiError.internal("Internal server error.", err instanceof Error ? err : undefined);
-}
-
-export function statusForCode(code: EasyMQErrorCode): number {
-  return STATUS_BY_CODE[code];
 }
 
 /**
@@ -161,5 +147,3 @@ export function classifyBackendError(err: unknown, operation: string): ApiError 
   }
   return ApiError.internal(`Unexpected backend failure during ${operation}.`, err);
 }
-
-export { STATUS_BY_CODE };
