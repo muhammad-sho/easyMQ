@@ -28,7 +28,7 @@ export class EasyMq implements INodeType {
   description: INodeTypeDescription = {
     displayName: "EasyMQ",
     name: "easyMq",
-    icon: "file:easymq.svg",
+    icon: "file:easymq.png",
     group: ["transform"],
     version: 1,
     subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',

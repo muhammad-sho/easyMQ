@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-easymq",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Native n8n community nodes for easyMQ — a lightweight, Redis-backed, RabbitMQ-like message broker.",
   "keywords": [
     "n8n-community-node-package",
@@ -21,7 +21,8 @@
   },
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run copy:icons",
+    "copy:icons": "cp nodes/EasyMq/easymq.png dist/nodes/EasyMq/easymq.png && cp nodes/EasyMqTrigger/easymq.png dist/nodes/EasyMqTrigger/easymq.png",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint credentials nodes index.ts",
     "format": "prettier --write .",

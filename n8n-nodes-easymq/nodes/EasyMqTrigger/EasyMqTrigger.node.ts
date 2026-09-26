@@ -84,7 +84,7 @@ export class EasyMqTrigger implements INodeType {
   description: INodeTypeDescription = {
     displayName: "EasyMQ Trigger",
     name: "easyMqTrigger",
-    icon: "file:easymq.svg",
+    icon: "file:easymq.png",
     group: ["trigger"],
     version: 1,
     description: "Listens to easyMQ messages",
