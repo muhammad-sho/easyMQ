@@ -18,20 +18,38 @@ return 1
 `;
 
 /**
- * Publish one message.
+ * Publish one message, or upsert it when the id already exists.
  * KEYS: registry, meta, ready, delayed, msg
- * ARGV: queue, id, dataJson, availableAt, now
- * Returns {'OK', state} | {'CONFLICT'}.
+ * ARGV: queue, id, dataJson, availableAt, now, upsert ('1' = update in place)
+ * Returns {'OK', state, upserted, createdAt} | {'CONFLICT'} | {'LEASED'}.
+ *
+ * Upsert replaces data and TTL as if freshly published (moved to the tail
+ * of ready, or re-scored when delayed; deliveries reset; createdAt kept).
+ * Leased (unacked) messages are never overwritten: {'LEASED'}.
  */
 export const PUBLISH_SCRIPT = `
-if redis.call('EXISTS', KEYS[5]) == 1 then
-  return {'CONFLICT'}
-end
 if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 0 then
   redis.call('SADD', KEYS[1], ARGV[1])
 end
 if redis.call('EXISTS', KEYS[2]) == 0 then
   redis.call('HSET', KEYS[2], 'createdAt', ARGV[5], 'published', 0, 'delivered', 0, 'acked', 0, 'requeued', 0, 'deleted', 0)
+end
+local exists = redis.call('EXISTS', KEYS[5])
+local upserted = 0
+if exists == 1 then
+  if ARGV[6] ~= '1' then
+    return {'CONFLICT'}
+  end
+  local current = redis.call('HGET', KEYS[5], 'state')
+  if current == 'unacked' then
+    return {'LEASED'}
+  end
+  upserted = 1
+  if current == 'ready' then
+    redis.call('LREM', KEYS[3], 0, ARGV[2])
+  elseif current == 'delayed' then
+    redis.call('ZREM', KEYS[4], ARGV[2])
+  end
 end
 local state
 if tonumber(ARGV[4]) <= tonumber(ARGV[5]) then
@@ -44,9 +62,18 @@ end
 redis.call('HSET', KEYS[5],
   'id', ARGV[2], 'queue', ARGV[1], 'data', ARGV[3], 'state', state,
   'consumer', '', 'deliveries', 0, 'availableAt', ARGV[4], 'visibleAt', 0,
-  'createdAt', ARGV[5], 'updatedAt', ARGV[5])
+  'updatedAt', ARGV[5])
+local createdAt = ARGV[5]
+if exists == 1 then
+  createdAt = redis.call('HGET', KEYS[5], 'createdAt')
+  if not createdAt then
+    createdAt = ARGV[5]
+  end
+else
+  redis.call('HSET', KEYS[5], 'createdAt', ARGV[5])
+end
 redis.call('HINCRBY', KEYS[2], 'published', 1)
-return {'OK', state}
+return {'OK', state, upserted, createdAt}
 `;
 
 /**

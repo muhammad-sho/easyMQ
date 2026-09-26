@@ -74,10 +74,16 @@ depths, per-consumer leases, and lifetime counters.
 
 ### Messages
 
-An id plus arbitrary JSON data. Messages waiting for delivery are either
-**ready** (a FIFO list) or **delayed** (hidden until their TTL passes).
-Publishing accepts an optional `id` (generated when omitted; duplicates
-conflict) and an optional `ttlMs` delay before availability.
+An id plus arbitrary JSON data. The id is **always explicit and
+mandatory** — it is the message's key, never generated. Messages waiting
+for delivery are either **ready** (a FIFO list) or **delayed** (hidden
+until their TTL passes). Publishing accepts an optional `ttlMs` delay
+before availability, and an optional `upsert` flag: when `true` and the id
+already exists in the queue, the message is updated in place with the new
+data and TTL (as if freshly published — moved to the tail, deliveries
+reset, original creation time kept). Without `upsert`, a duplicate id
+conflicts (`409`). Leased (unacked) messages always conflict, even with
+upsert — settle them first.
 
 ### Consumers
 
@@ -291,8 +297,10 @@ Simple operations, no raw API details:
 Publish · Acknowledge · Requeue · Delete · Set TTL · Get
 ```
 
-plus queue declare/stats/list/delete. Acknowledge-family fields default to
-the trigger item (`={{ $json.messageId }}` …), so this needs no manual IDs:
+plus queue declare/stats/list/delete. Publish requires a **Message ID**
+(the upsert key) and offers an **Upsert** flag to update an existing id
+instead of conflicting. Acknowledge-family fields default to the trigger
+item (`={{ $json.messageId }}` …), so this needs no manual IDs:
 
 ```text
 EasyMQ Trigger

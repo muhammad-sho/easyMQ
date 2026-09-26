@@ -174,21 +174,27 @@ export class EasyMq implements INodeType {
         displayName: "Message ID",
         name: "messageId",
         type: "string",
-        // Picks up the id straight from an EasyMQ Trigger output item.
+        // Picks up the id straight from an EasyMQ Trigger output item when
+        // connected; for Publish it is the upsert key (always explicit).
         default: "={{ $json.messageId }}",
         displayOptions: {
-          show: { resource: ["message"], operation: ["get", "ack", "requeue", "delete", "setTtl"] },
+          show: {
+            resource: ["message"],
+            operation: ["publish", "get", "ack", "requeue", "delete", "setTtl"],
+          },
         },
-        description: "Unique id of the message (taken from the trigger item when connected)",
+        description:
+          "Unique id of the message — the upsert key when publishing (taken from the trigger item when connected)",
         required: true,
       },
       {
-        displayName: "Custom Message ID",
-        name: "customMessageId",
-        type: "string",
-        default: "",
+        displayName: "Upsert",
+        name: "upsert",
+        type: "boolean",
+        default: false,
         displayOptions: { show: { resource: ["message"], operation: ["publish"] } },
-        description: "Optional id for the message (generated when empty; duplicates conflict)",
+        description:
+          "Update the message in place when the ID already exists (new data and TTL), instead of failing with a conflict. Leased messages always conflict.",
       },
       {
         displayName: "TTL (Ms)",
@@ -263,11 +269,17 @@ export class EasyMq implements INodeType {
           const dataParam: unknown = this.getNodeParameter("messageData", i);
           const data: unknown =
             typeof dataParam === "string" ? (JSON.parse(dataParam) as unknown) : dataParam;
-          const customId = strParam(this.getNodeParameter("customMessageId", i, "")).trim();
+          const messageId = strParam(this.getNodeParameter("messageId", i, "")).trim();
+          if (messageId === "") {
+            throw new NodeOperationError(this.getNode(), "Message ID is required.", {
+              itemIndex: i,
+            });
+          }
           const ttlMs = numParam(this.getNodeParameter("ttlMs", i, 0), 0);
-          const body: Record<string, unknown> = { data };
-          if (customId !== "") body["id"] = customId;
+          const upsert = this.getNodeParameter("upsert", i, false);
+          const body: Record<string, unknown> = { id: messageId, data };
           if (ttlMs > 0) body["ttlMs"] = ttlMs;
+          if (upsert === true) body["upsert"] = true;
           const response = await request.call(
             this,
             "POST",

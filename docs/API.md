@@ -93,15 +93,25 @@ Publishing to a missing queue declares it automatically.
 ```bash
 curl -s -X POST localhost:3000/queues/orders/messages \
   -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"data":{"message":"hello"},"ttlMs":60000}'
+  -d '{"id":"order-42","data":{"message":"hello"},"ttlMs":60000}'
 ```
 
-Body: `data` (required, arbitrary JSON), `id` (optional; generated as
-`msg_…` when omitted; duplicates → `409 CONFLICT`), `ttlMs` (optional
-delay in ms before the message becomes available; `0` = immediately).
+Body: `id` (**required** — the message key, never generated), `data`
+(required, arbitrary JSON), `ttlMs` (optional delay in ms before the
+message becomes available; `0` = immediately), `upsert` (optional boolean,
+default `false`).
 
-Response (`201`): `{id, queue, state, availableAt, createdAt,
-deliveryCount: 0}`. Payloads over `MAX_MESSAGE_BYTES` → `400`.
+- New id → `201 Created`: `{id, queue, state, availableAt, createdAt,
+  upserted: false, deliveryCount: 0}`.
+- Existing id without `upsert` → `409 CONFLICT`.
+- Existing id with `"upsert": true` → `200 OK` with `upserted: true`: the
+  message is updated in place with the new data and TTL, as if freshly
+  published (moved to the tail of ready, or re-scored when delayed;
+  deliveries reset; the original creation time is kept). Still only one
+  copy ever exists.
+- Upserting a leased (`unacked`) message → `409 CONFLICT` — ack or requeue
+  it first, exactly like delete and TTL changes.
+- Payloads over `MAX_MESSAGE_BYTES` → `400`.
 
 ## Inspect a message
 

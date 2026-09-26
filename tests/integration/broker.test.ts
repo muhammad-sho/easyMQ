@@ -49,15 +49,15 @@ describe("broker queues", () => {
   });
 
   it("publishes implicitly declare the queue", async () => {
-    await system.broker.publish("auto", { message: "hello" });
+    await system.broker.publish("auto", { message: "hello" }, { id: "msg_auto" });
     const stats = await system.broker.getQueue("auto");
     expect(stats.ready).toBe(1);
     expect(stats.published).toBe(1);
   });
 
   it("deletes a queue with all its messages", async () => {
-    await system.broker.publish("temp", { n: 1 });
-    await system.broker.publish("temp", { n: 2 }, { ttlMs: 60_000 });
+    await system.broker.publish("temp", { n: 1 }, { id: "msg_t1" });
+    await system.broker.publish("temp", { n: 2 }, { id: "msg_t2", ttlMs: 60_000 });
     await system.broker.consume("temp", { consumerId: "c1" });
     await system.broker.deleteQueue("temp");
     await expectCode(system.broker.getQueue("temp"), "NOT_FOUND");
@@ -66,8 +66,8 @@ describe("broker queues", () => {
   });
 
   it("supports queue names with spaces and glob characters", async () => {
-    await system.broker.publish("my queue", { a: 1 });
-    await system.broker.publish("q*test[1]", { b: 2 });
+    await system.broker.publish("my queue", { a: 1 }, { id: "msg_space" });
+    await system.broker.publish("q*test[1]", { b: 2 }, { id: "msg_glob" });
     const names = (await system.broker.listQueues()).map((q) => q.queue).sort();
     expect(names).toEqual(["my queue", "q*test[1]"]);
     await system.broker.deleteQueue("q*test[1]");
@@ -89,7 +89,7 @@ describe("broker publish/consume/ack", () => {
 
   it("delivers messages FIFO with the {id, data} shape", async () => {
     for (let i = 0; i < 5; i += 1) {
-      await system.broker.publish("q", { message: `m${String(i)}` });
+      await system.broker.publish("q", { message: `m${String(i)}` }, { id: `msg_m${String(i)}` });
     }
     const result = await system.broker.consume("q", { consumerId: "c1", count: 5 });
     expect(result.consumerId).toBe("c1");
@@ -117,9 +117,63 @@ describe("broker publish/consume/ack", () => {
     expect(err.resource).toMatchObject({ type: "message", id: "msg_123", queue: "q" });
   });
 
+  it("upserts an existing ready message with new data, keeping one copy", async () => {
+    const first = await system.broker.publish("q", { v: 1 }, { id: "msg_up" });
+    expect(first.upserted).toBe(false);
+    const second = await system.broker.publish("q", { v: 2 }, { id: "msg_up", upsert: true });
+    expect(second.upserted).toBe(true);
+    expect(second.createdAt).toBe(first.createdAt);
+
+    const inspected = await system.broker.getMessage("q", "msg_up");
+    expect(inspected.data).toEqual({ v: 2 });
+    expect(inspected.state).toBe("ready");
+    expect(inspected.deliveryCount).toBe(0);
+
+    const consumed = await system.broker.consume("q", { consumerId: "c1", count: 5 });
+    expect(consumed.messages.map((m) => m.id)).toEqual(["msg_up"]);
+    expect(consumed.messages[0]?.data).toEqual({ v: 2 });
+  });
+
+  it("upsert moves messages between ready and delayed with the new TTL", async () => {
+    await system.broker.publish("q", { v: 1 }, { id: "msg_move", ttlMs: 60_000 });
+    expect((await system.broker.getQueue("q")).delayed).toBe(1);
+
+    const released = await system.broker.publish(
+      "q",
+      { v: 2 },
+      { id: "msg_move", ttlMs: 0, upsert: true },
+    );
+    expect(released).toMatchObject({ upserted: true, state: "ready" });
+    const stats = await system.broker.getQueue("q");
+    expect(stats).toMatchObject({ ready: 1, delayed: 0 });
+
+    const hidden = await system.broker.publish(
+      "q",
+      { v: 3 },
+      { id: "msg_move", ttlMs: 60_000, upsert: true },
+    );
+    expect(hidden).toMatchObject({ upserted: true, state: "delayed" });
+    expect((await system.broker.consume("q", { consumerId: "c1" })).messages).toHaveLength(0);
+  });
+
+  it("upsert on a missing id creates the message", async () => {
+    const created = await system.broker.publish("q", { v: 1 }, { id: "msg_new", upsert: true });
+    expect(created.upserted).toBe(false);
+    expect((await system.broker.getQueue("q")).ready).toBe(1);
+  });
+
+  it("upsert on a leased message conflicts like delete and TTL changes", async () => {
+    await system.broker.publish("q", { v: 1 }, { id: "msg_lease" });
+    await system.broker.consume("q", { consumerId: "c1" });
+    await expectCode(
+      system.broker.publish("q", { v: 2 }, { id: "msg_lease", upsert: true }),
+      "CONFLICT",
+    );
+  });
+
   it("shares work across competing consumers without duplicates", async () => {
     for (let i = 0; i < 10; i += 1) {
-      await system.broker.publish("q", { n: i });
+      await system.broker.publish("q", { n: i }, { id: `msg_w${String(i)}` });
     }
     const [a, b] = await Promise.all([
       system.broker.consume("q", { consumerId: "a", count: 10 }),
@@ -132,7 +186,7 @@ describe("broker publish/consume/ack", () => {
 
   it("enforces prefetch per consumer", async () => {
     for (let i = 0; i < 5; i += 1) {
-      await system.broker.publish("q", { n: i });
+      await system.broker.publish("q", { n: i }, { id: `msg_p${String(i)}` });
     }
     const first = await system.broker.consume("q", { consumerId: "c1", count: 10, prefetch: 2 });
     expect(first.messages).toHaveLength(2);
@@ -144,7 +198,7 @@ describe("broker publish/consume/ack", () => {
   });
 
   it("acks remove messages; wrong states and owners conflict", async () => {
-    const published = await system.broker.publish("q", { message: "hello" });
+    const published = await system.broker.publish("q", { message: "hello" }, { id: "msg_ack" });
     await expectCode(system.broker.ack("q", published.id), "CONFLICT");
     const consumed = await system.broker.consume("q", { consumerId: "owner" });
     const id = consumed.messages[0]?.id ?? "";
@@ -157,7 +211,7 @@ describe("broker publish/consume/ack", () => {
   });
 
   it("requeues leased messages for redelivery", async () => {
-    await system.broker.publish("q", { message: "hello" });
+    await system.broker.publish("q", { message: "hello" }, { id: "msg_rq" });
     const first = await system.broker.consume("q", { consumerId: "c1" });
     const id = first.messages[0]?.id ?? "";
     await system.broker.requeue("q", id, "c1");
@@ -171,7 +225,7 @@ describe("broker publish/consume/ack", () => {
   });
 
   it("redelivers unacked messages after the visibility timeout", async () => {
-    await system.broker.publish("q", { message: "hello" });
+    await system.broker.publish("q", { message: "hello" }, { id: "msg_vis" });
     const first = await system.broker.consume("q", {
       consumerId: "c1",
       visibilityTimeoutMs: 300,
@@ -192,7 +246,7 @@ describe("broker publish/consume/ack", () => {
 
   it("cancelling a consumer requeues its leases", async () => {
     for (let i = 0; i < 3; i += 1) {
-      await system.broker.publish("q", { n: i });
+      await system.broker.publish("q", { n: i }, { id: `msg_c${String(i)}` });
     }
     await system.broker.consume("q", { consumerId: "c1", count: 3 });
     const cancelled = await system.broker.cancelConsumer("q", "c1");
@@ -219,8 +273,8 @@ describe("broker delete + TTL", () => {
   });
 
   it("deletes waiting messages but not leased ones", async () => {
-    const keep = await system.broker.publish("q", { n: "keep" });
-    const drop = await system.broker.publish("q", { n: "drop" });
+    const keep = await system.broker.publish("q", { n: "keep" }, { id: "msg_keep" });
+    const drop = await system.broker.publish("q", { n: "drop" }, { id: "msg_drop" });
     await system.broker.deleteMessage("q", drop.id);
     await expectCode(system.broker.getMessage("q", drop.id), "NOT_FOUND");
     const consumed = await system.broker.consume("q", { consumerId: "c1", count: 5 });
@@ -230,7 +284,7 @@ describe("broker delete + TTL", () => {
   });
 
   it("hides published messages until their TTL passes, then delivers them", async () => {
-    await system.broker.publish("q", { message: "later" }, { ttlMs: 400 });
+    await system.broker.publish("q", { message: "later" }, { id: "msg_later", ttlMs: 400 });
     expect((await system.broker.consume("q", { consumerId: "c1" })).messages).toHaveLength(0);
     expect((await system.broker.getQueue("q")).delayed).toBe(1);
     await waitFor(
@@ -242,7 +296,7 @@ describe("broker delete + TTL", () => {
   });
 
   it("resets a ready message's TTL and makes it delayed", async () => {
-    const published = await system.broker.publish("q", { message: "hello" });
+    const published = await system.broker.publish("q", { message: "hello" }, { id: "msg_rt" });
     const changed = await system.broker.setMessageTtl("q", published.id, 60_000);
     expect(changed.state).toBe("delayed");
     expect(changed.availableAt).toBeGreaterThan(Date.now());
@@ -252,7 +306,11 @@ describe("broker delete + TTL", () => {
   });
 
   it("a TTL of zero makes a delayed message immediately available", async () => {
-    const published = await system.broker.publish("q", { message: "hello" }, { ttlMs: 60_000 });
+    const published = await system.broker.publish(
+      "q",
+      { message: "hello" },
+      { id: "msg_z", ttlMs: 60_000 },
+    );
     const changed = await system.broker.setMessageTtl("q", published.id, 0);
     expect(changed.state).toBe("ready");
     const consumed = await system.broker.consume("q", { consumerId: "c1" });
@@ -260,14 +318,14 @@ describe("broker delete + TTL", () => {
   });
 
   it("rejects TTL changes on leased or missing messages", async () => {
-    const published = await system.broker.publish("q", { message: "hello" });
+    const published = await system.broker.publish("q", { message: "hello" }, { id: "msg_lc" });
     await system.broker.consume("q", { consumerId: "c1" });
     await expectCode(system.broker.setMessageTtl("q", published.id, 1000), "CONFLICT");
     await expectCode(system.broker.setMessageTtl("q", "msg_missing", 1000), "NOT_FOUND");
   });
 
   it("TTL expiry does not delete the message — it becomes consumable", async () => {
-    await system.broker.publish("q", { message: "hello" }, { ttlMs: 300 });
+    await system.broker.publish("q", { message: "hello" }, { id: "msg_exp", ttlMs: 300 });
     await waitFor(async () => (await system.broker.getQueue("q")).delayed === 0, {
       label: "sweeper promotion",
     });

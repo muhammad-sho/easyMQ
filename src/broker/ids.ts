@@ -13,11 +13,6 @@ function randomSuffix(length: number): string {
   return out;
 }
 
-/** Unique message id (`msg_<12 chars>`). Uniqueness is enforced in Redis. */
-export function generateMessageId(): string {
-  return `msg_${randomSuffix(12)}`;
-}
-
 /** Default consumer id when the caller does not name its consumer. */
 export function generateConsumerId(): string {
   return `cons_${randomSuffix(10)}`;

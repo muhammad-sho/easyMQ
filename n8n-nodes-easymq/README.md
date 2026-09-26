@@ -76,6 +76,20 @@ several workflows share a queue.
 }
 ```
 
+### Troubleshooting
+
+**"Timed out waiting for the easyMQ hello reply" on activation.**
+The trigger opened the connection but the server never answered. Check,
+in order:
+
+1. easyMQ is **2.1.0+** (the subscribe endpoint is new) and reachable
+   from n8n: `docker compose pull && docker compose up -d`, then
+   `curl http://<host>:3000/health/ready`.
+2. Redis is healthy (`/health/ready` returns 200, not 503).
+3. The easyMQ logs around activation (`docker compose logs easymq`):
+   `Consumer connected` means the hello succeeded; `subscribe-failed` /
+   `frame-failed` entries explain the refusal.
+
 ## EasyMQ node
 
 Simple operations over queues and messages:
@@ -107,10 +121,11 @@ EasyMQ Trigger (Execution Finishes Successfully)
 
 ## Examples
 
-Publish from any workflow:
+Publish from any workflow (Message ID is required — it is the upsert key;
+tick **Upsert** to update an existing ID instead of conflicting):
 
 ```text
-Schedule Trigger → EasyMQ (Publish: queue "orders", data {...})
+Schedule Trigger → EasyMQ (Publish: queue "orders", id "order-42", data {...})
 ```
 
 Competing workers — two activated workflows with triggers on the same
@@ -147,8 +162,8 @@ workflow](../.github/workflows/publish-n8n.yml), which uses the
 ```bash
 npm version patch|minor|major   # bumps n8n-nodes-easymq/package.json
 git push origin main
-git tag n8n-nodes-easymq-v0.2.0  # must match package.json
-git push origin n8n-nodes-easymq-v0.2.0
+git tag n8n-nodes-easymq-v0.3.0  # must match package.json
+git push origin n8n-nodes-easymq-v0.3.0
 ```
 
 Pushing the tag builds, verifies, and runs `npm publish --access public`.

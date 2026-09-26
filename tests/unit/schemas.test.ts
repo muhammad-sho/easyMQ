@@ -7,11 +7,16 @@ import {
 } from "../../src/api/schemas/messages.js";
 
 describe("broker schemas", () => {
-  it("accepts a minimal publish body", () => {
-    expect(publishMessageSchema.safeParse({ data: { message: "hello" } }).success).toBe(true);
+  it("accepts a minimal publish body with a mandatory id", () => {
     expect(
-      publishMessageSchema.safeParse({ id: "msg_123", data: [1, 2], ttlMs: 60000 }).success,
+      publishMessageSchema.safeParse({ id: "msg_1", data: { message: "hello" } }).success,
     ).toBe(true);
+    expect(
+      publishMessageSchema.safeParse({ id: "msg_123", data: [1, 2], ttlMs: 60000, upsert: true })
+        .success,
+    ).toBe(true);
+    // Ids are never generated: missing id fails.
+    expect(publishMessageSchema.safeParse({ data: { message: "hello" } }).success).toBe(false);
   });
 
   it("rejects publish bodies without data or with unknown fields", () => {

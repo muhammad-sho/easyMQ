@@ -106,11 +106,14 @@ describe("persistent consumers (WebSocket subscribe)", () => {
     expect(res.status).toBe(200);
   }
 
+  let publishSeq = 0;
   async function publish(queue: string, body: unknown): Promise<{ id: string }> {
+    publishSeq += 1;
     const res = await fetch(`${base}/queues/${queue}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      // Message ids are mandatory; the helper mints one per call.
+      body: JSON.stringify({ id: `msg_sub${publishSeq}`, ...(body as Record<string, unknown>) }),
     });
     expect(res.status).toBe(201);
     return (await res.json()) as { id: string };
@@ -176,6 +179,27 @@ describe("persistent consumers (WebSocket subscribe)", () => {
     ws.send(JSON.stringify({ action: "hello" }));
     await expect(nextFrame()).resolves.toMatchObject({ type: "error", code: "NOT_FOUND" });
     await expect(closed).resolves.toMatchObject({ code: 4404 });
+  });
+
+  it("answers hello with an error and closes when subscribing fails mid-handshake", async () => {
+    await declareQueue("flaky");
+    // Sabotage the lease step: the queue exists (hello passes validation)
+    // but delivery blows up. The client must get an error frame and a
+    // close — never silence followed by a client-side timeout.
+    const consume = system.broker.consume.bind(system.broker);
+    system.broker.consume = () => Promise.reject(new Error("backend exploded"));
+    try {
+      const { ws, nextFrame, closed } = openConsumer(base, "flaky");
+      await waitOpen(ws);
+      ws.send(JSON.stringify({ action: "hello", prefetch: 5 }));
+      await expect(nextFrame()).resolves.toMatchObject({
+        type: "error",
+        code: "INTERNAL_ERROR",
+      });
+      await expect(closed).resolves.toMatchObject({ code: 1011 });
+    } finally {
+      system.broker.consume = consume;
+    }
   });
 
   it("answers protocol violations with error frames and keeps the socket open", async () => {

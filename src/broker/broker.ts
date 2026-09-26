@@ -1,6 +1,6 @@
 import type { Redis } from "ioredis";
 import { ApiError, classifyBackendError } from "../api/errors.js";
-import { generateConsumerId, generateMessageId } from "./ids.js";
+import { generateConsumerId } from "./ids.js";
 import { escapeGlob, messageKey, pendingKey, queueKeys } from "./keys.js";
 import {
   ACK_SCRIPT,
@@ -33,9 +33,16 @@ export interface BrokerOptions {
 }
 
 export interface PublishOptions {
-  id?: string | undefined;
+  /** Message id (the upsert key). Always explicit — never generated. */
+  id: string;
   /** Delay before the message becomes available (ms from now). */
   ttlMs?: number | undefined;
+  /**
+   * Update the message in place when the id already exists (new data and
+   * TTL, as if freshly published). Without this, duplicates conflict.
+   * Leased (unacked) messages always conflict, even with upsert.
+   */
+  upsert?: boolean | undefined;
 }
 
 export interface PublishedMessage {
@@ -44,6 +51,8 @@ export interface PublishedMessage {
   state: MessageState;
   availableAt: number;
   createdAt: number;
+  /** True when an existing message was updated instead of created. */
+  upserted: boolean;
 }
 
 export interface ConsumeOptions {
@@ -368,7 +377,7 @@ export class BrokerService {
     }
   }
 
-  async publish(queue: string, data: Json, opts: PublishOptions = {}): Promise<PublishedMessage> {
+  async publish(queue: string, data: Json, opts: PublishOptions): Promise<PublishedMessage> {
     const dataJson = JSON.stringify(data);
     if (Buffer.byteLength(dataJson, "utf8") > this.options.maxMessageBytes) {
       throw ApiError.validation(
@@ -379,42 +388,43 @@ export class BrokerService {
     const ttlMs = opts.ttlMs ?? 0;
     const now = Date.now();
     const availableAt = now + ttlMs;
-    const requestedId = opts.id;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const id = requestedId ?? generateMessageId();
-      let reply: unknown;
-      try {
-        reply = await this.call("easymqPublish", [
-          keys.registry,
-          keys.meta,
-          keys.ready,
-          keys.delayed,
-          messageKey(keys, id),
-          queue,
-          id,
-          dataJson,
-          availableAt,
-          now,
-        ]);
-      } catch (err) {
-        throw classifyBackendError(err, "publish message");
-      }
-      const parts = asArray(reply, "publish");
-      const status = asString(parts[0], "publish");
-      if (status === "CONFLICT") {
-        if (requestedId !== undefined) {
-          throw new ApiError("CONFLICT", `Message '${requestedId}' already exists.`, {
-            resource: { type: "message", id: requestedId, queue },
-          });
-        }
-        continue; // generated id collided — retry (practically impossible)
-      }
-      const state = asString(parts[1], "publish");
-      if (!isMessageState(state)) throw ApiError.internal("Unexpected reply from publish.");
-      this.notifyChanged(queue);
-      return { id, queue, state, availableAt, createdAt: now };
+    const id = opts.id;
+    let reply: unknown;
+    try {
+      reply = await this.call("easymqPublish", [
+        keys.registry,
+        keys.meta,
+        keys.ready,
+        keys.delayed,
+        messageKey(keys, id),
+        queue,
+        id,
+        dataJson,
+        availableAt,
+        now,
+        opts.upsert === true ? 1 : 0,
+      ]);
+    } catch (err) {
+      throw classifyBackendError(err, "publish message");
     }
-    throw ApiError.internal("Failed to allocate a message id.");
+    const parts = asArray(reply, "publish");
+    const status = asString(parts[0], "publish");
+    if (status === "CONFLICT") {
+      throw new ApiError("CONFLICT", `Message '${id}' already exists.`, {
+        resource: { type: "message", id, queue },
+      });
+    }
+    if (status === "LEASED") {
+      throw new ApiError("CONFLICT", `Message '${id}' is unacked; ack or requeue it first.`, {
+        resource: { type: "message", id, queue },
+      });
+    }
+    const state = asString(parts[1], "publish");
+    if (!isMessageState(state)) throw ApiError.internal("Unexpected reply from publish.");
+    const upserted = asNumber(parts[2], "publish") === 1;
+    const createdAt = asNumber(parts[3], "publish");
+    this.notifyChanged(queue);
+    return { id, queue, state, availableAt, createdAt, upserted };
   }
 
   async getMessage(queue: string, id: string): Promise<BrokerMessage> {

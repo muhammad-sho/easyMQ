@@ -1,6 +1,6 @@
 {
   "name": "easymq",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "description": "easyMQ — a lightweight, Redis-backed, RabbitMQ-like message broker with message delete and TTL reset.",
   "main": "index.js",
   "type": "module",

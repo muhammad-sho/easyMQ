@@ -284,8 +284,20 @@ export class EasyMqTrigger implements INodeType {
     const waitReady = async (candidate: WebSocket): Promise<ReadyInfo> => {
       return new Promise<ReadyInfo>((resolve, reject) => {
         const timer = setTimeout(() => {
-          reject(new Error("Timed out waiting for the easyMQ hello reply"));
-        }, 10000);
+          cleanup();
+          try {
+            candidate.close(1000, "Hello reply timed out");
+          } catch {
+            // ignore — socket is already gone
+          }
+          reject(
+            new Error(
+              `Timed out waiting for the easyMQ hello reply from ${wsUrl}. ` +
+                "Is easyMQ 2.1.0+ running and reachable from n8n, and is Redis healthy? " +
+                "Check the easyMQ logs for subscribe/Redis errors.",
+            ),
+          );
+        }, 15000);
         const cleanup = (): void => {
           clearTimeout(timer);
           candidate.off("message", onFrame);

@@ -16,10 +16,12 @@ export function registerMessageRoutes(app: AppInstance, services: ApiServices): 
     const params = parseWith(queueParamsSchema, request.params, "path parameters");
     const input = parseWith(publishMessageSchema, request.body, "request body");
     const published = await broker.publish(params.queue, input.data, {
-      ...(input.id !== undefined ? { id: input.id } : {}),
+      id: input.id,
       ...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),
+      ...(input.upsert === true ? { upsert: true } : {}),
     });
-    return reply.status(201).send({ ...published, deliveryCount: 0 });
+    // 201 for a new message, 200 when an existing id was updated.
+    return reply.status(published.upserted ? 200 : 201).send({ ...published, deliveryCount: 0 });
   });
 
   app.post("/queues/:queue/consume", async (request) => {

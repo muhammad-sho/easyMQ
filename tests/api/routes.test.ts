@@ -51,6 +51,7 @@ function mockBroker(): BrokerService {
         state: "ready",
         availableAt: 1,
         createdAt: 1,
+        upserted: false,
       }),
     ),
     getMessage: vi.fn().mockImplementation((queue: string, id: string) =>
@@ -137,7 +138,7 @@ describe("broker routes (mocked service, no Redis)", () => {
       method: "POST",
       url: "/queues/orders/messages",
       headers: auth,
-      payload: { data: { message: "hello" } },
+      payload: { id: "msg_123", data: { message: "hello" } },
     });
     expect(res.statusCode).toBe(201);
     expect(res.json()).toMatchObject({ id: "msg_123" });

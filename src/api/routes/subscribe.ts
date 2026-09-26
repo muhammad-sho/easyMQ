@@ -75,32 +75,19 @@ export function registerSubscribeRoutes(app: AppInstance, services: ApiServices)
     const params = parseWith(queueParamsSchema, request.params, "path parameters");
     const queue = params.queue;
 
-    try {
-      await broker.getQueue(queue);
-    } catch (err) {
-      if (err instanceof ApiError && err.code === "NOT_FOUND") {
-        sendFrame(socket, errorFrame("NOT_FOUND", `Queue '${queue}' not found.`));
-        socket.close(SUBSCRIBE_CLOSE_UNKNOWN_QUEUE, "Unknown queue");
-        return;
-      }
-      throw err;
-    }
-
-    const offDelete = broker.onDeleteQueue((deleted) => {
-      if (deleted === queue) {
-        try {
-          socket.close(SUBSCRIBE_CLOSE_QUEUE_DELETED, "Queue deleted");
-        } catch {
-          // ignore — socket is already gone
-        }
-      }
-    });
-
+    // All synchronous setup first: listeners must be attached before the
+    // first await below, otherwise a fast client hello arriving during the
+    // queue check would be dropped silently (ws does not buffer 'message'
+    // events for listeners attached later) and the client would hang until
+    // its own timeout. Frames are processed through a promise chain so
+    // early arrivals keep their order.
     let handle: SubscriberHandle | undefined;
     let consumerId = "";
     let settled = false;
+    let helloReceived = false;
     let helloTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
       helloTimer = undefined;
+      if (helloReceived) return;
       try {
         sendFrame(socket, errorFrame("PROTOCOL_ERROR", "Expected a hello frame first."));
         socket.close(SUBSCRIBE_CLOSE_PROTOCOL_ERROR, "No hello frame");
@@ -135,16 +122,42 @@ export function registerSubscribeRoutes(app: AppInstance, services: ApiServices)
       logger.info({ event: "unsubscribed", queue, consumer: consumerId }, "Consumer disconnected");
     };
 
+    let frameChain: Promise<void> = Promise.resolve();
+    socket.on("message", (raw: WebSocket.RawData) => {
+      helloReceived = true;
+      frameChain = frameChain
+        .then(() => onClientFrame(raw))
+        .catch((err: unknown) => {
+          logger.warn({ err, queue, event: "frame-failed" }, "Client frame handling failed");
+        });
+    });
     socket.on("close", cleanup);
     socket.on("error", (err: Error) => {
       logger.warn({ err, queue, event: "socket-error" }, "Consumer socket error");
     });
 
-    socket.on("message", (raw: WebSocket.RawData) => {
-      void onClientFrame(raw).catch((err: unknown) => {
-        logger.warn({ err, queue, event: "frame-failed" }, "Client frame handling failed");
-      });
+    const offDelete = broker.onDeleteQueue((deleted) => {
+      if (deleted === queue) {
+        try {
+          socket.close(SUBSCRIBE_CLOSE_QUEUE_DELETED, "Queue deleted");
+        } catch {
+          // ignore — socket is already gone
+        }
+      }
     });
+
+    try {
+      await broker.getQueue(queue);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "NOT_FOUND") {
+        sendFrame(socket, errorFrame("NOT_FOUND", `Queue '${queue}' not found.`));
+        socket.close(SUBSCRIBE_CLOSE_UNKNOWN_QUEUE, "Unknown queue");
+        return;
+      }
+      throw err;
+    }
+    // Frames received during the queue check above were chained and
+    // process now, in order — nothing was lost.
 
     async function onClientFrame(raw: WebSocket.RawData): Promise<void> {
       let frame: unknown;
@@ -165,15 +178,17 @@ export function registerSubscribeRoutes(app: AppInstance, services: ApiServices)
           clearTimeout(helloTimer);
           helloTimer = undefined;
         }
-        const sub = await subscriptions.add({
-          queue,
-          ...(input.consumerId !== undefined ? { consumerId: input.consumerId } : {}),
-          prefetch: input.prefetch ?? config.defaultPrefetch,
-          visibilityTimeoutMs: input.visibilityTimeoutMs ?? config.defaultVisibilityTimeoutMs,
-          send: (message: OutgoingMessage) => {
-            sendFrame(socket, { type: "message", ...message });
-          },
-        });
+        const sub = await subscribeOrFail(input);
+        if (sub === undefined) return;
+        if (settled) {
+          // The socket closed while subscribing: drop the fresh
+          // registration immediately instead of leaking a dead consumer.
+          subscriptions.remove(sub);
+          await broker.cancelConsumer(queue, sub.consumerId).catch((err: unknown) => {
+            logger.warn({ err, queue, event: "cancel-failed" }, "Cancel on disconnect failed");
+          });
+          return;
+        }
         handle = sub;
         consumerId = sub.consumerId;
         sendFrame(socket, {
@@ -206,6 +221,42 @@ export function registerSubscribeRoutes(app: AppInstance, services: ApiServices)
         return;
       }
       await onActionFrame(record, handle);
+    }
+
+    /**
+     * Register the consumer. Failures are reported to the client with an
+     * error frame and a close — never silence, so a waiting hello always
+     * gets an answer (ready, error, or close).
+     */
+    async function subscribeOrFail(input: {
+      consumerId?: string;
+      prefetch?: number;
+      visibilityTimeoutMs?: number;
+    }): Promise<SubscriberHandle | undefined> {
+      try {
+        return await subscriptions.add({
+          queue,
+          ...(input.consumerId !== undefined ? { consumerId: input.consumerId } : {}),
+          prefetch: input.prefetch ?? config.defaultPrefetch,
+          visibilityTimeoutMs: input.visibilityTimeoutMs ?? config.defaultVisibilityTimeoutMs,
+          send: (message: OutgoingMessage) => {
+            sendFrame(socket, { type: "message", ...message });
+          },
+        });
+      } catch (err) {
+        if (err instanceof ApiError) {
+          sendFrame(socket, errorFrame(err.code, err.message));
+        } else {
+          logger.warn({ err, queue, event: "subscribe-failed" }, "Subscription setup failed");
+          sendFrame(socket, errorFrame("INTERNAL_ERROR", "Failed to subscribe."));
+        }
+        try {
+          socket.close(1011, "Subscribe failed");
+        } catch {
+          // ignore — socket is already gone
+        }
+        return undefined;
+      }
     }
 
     function parseHello(

@@ -77,6 +77,39 @@ describe("broker HTTP API", () => {
     expect(await res.json()).toMatchObject({ acked: true });
   });
 
+  it("requires a message id and supports upsert publishing", async () => {
+    await fetch(`${base}/queues/up`, { method: "PUT" });
+    const post = (body: unknown): Promise<Response> =>
+      fetch(`${base}/queues/up/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    // Missing id is a validation error, not a generated id.
+    let res = await post({ data: { v: 0 } });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+
+    res = await post({ id: "msg_up", data: { v: 1 } });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ id: "msg_up", upserted: false });
+
+    // Same id without upsert conflicts.
+    res = await post({ id: "msg_up", data: { v: 2 } });
+    expect(res.status).toBe(409);
+
+    // Same id with upsert updates in place (200, single copy).
+    res = await post({ id: "msg_up", data: { v: 2 }, upsert: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: "msg_up", upserted: true });
+
+    res = await fetch(`${base}/queues/up/messages/msg_up`);
+    expect(await res.json()).toMatchObject({ data: { v: 2 } });
+    const stats = (await (await fetch(`${base}/queues/up`)).json()) as { ready: number };
+    expect(stats.ready).toBe(1);
+  });
+
   it("deletes a queued message so consumers never see it", async () => {
     await fetch(`${base}/queues/del`, { method: "PUT" });
     for (const id of ["msg_1", "msg_2"]) {

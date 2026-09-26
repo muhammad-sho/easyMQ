@@ -1,13 +1,20 @@
 import { z } from "zod";
 import { consumerIdSchema, messageIdSchema } from "./common.js";
 
-/** Publish body: a message is simply an id plus arbitrary JSON data. */
+/** Publish body: a message is an explicit id plus arbitrary JSON data. */
 export const publishMessageSchema = z
   .object({
-    id: messageIdSchema.optional(),
+    /** Message id (the upsert key). Always explicit — never generated. */
+    id: messageIdSchema,
     data: z.json(),
     /** Delay before the message becomes available (ms from now). */
     ttlMs: z.number().int().min(0).max(2_592_000_000).optional(),
+    /**
+     * Update the message in place when the id already exists (new data
+     * and TTL, as if freshly published). Without this, duplicates
+     * conflict with 409. Leased messages always conflict.
+     */
+    upsert: z.boolean().optional(),
   })
   .strict();
 
