@@ -162,8 +162,8 @@ workflow](../.github/workflows/publish-n8n.yml), which uses the
 ```bash
 npm version patch|minor|major   # bumps n8n-nodes-easymq/package.json
 git push origin main
-git tag n8n-nodes-easymq-v0.3.1  # must match package.json
-git push origin n8n-nodes-easymq-v0.3.1
+git tag n8n-nodes-easymq-v0.3.2  # must match package.json
+git push origin n8n-nodes-easymq-v0.3.2
 ```
 
 Pushing the tag builds, verifies, and runs `npm publish --access public`.
